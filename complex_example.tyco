@@ -1,0 +1,26 @@
+str environment: production
+int port: 8080
+bool debug: false
+str[] supported_languages: ["cpp", "python", "javascript"]
+int[] allowed_ports: [80, 443, 8080, 3000]
+
+Server:
+ *str name:
+  int port:
+  str host:
+  bool ssl_enabled:
+  - web1, 80, web1.example.com, false
+  - web2, 443, web2.example.com, true
+  - api1, 3000, api1.example.com, true
+
+Database:
+ *str name:
+  str connection_string:
+  int max_connections:
+  - primary, postgresql://localhost:5432/main, 100
+  - replica, postgresql://replica:5432/main, 50
+
+LoadBalancer:
+ *str name:
+  str algorithm:
+  - main-lb, round-robin

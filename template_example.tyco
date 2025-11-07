@@ -1,0 +1,23 @@
+str environment: production
+str domain: example.com
+str app_name: myapp
+int base_port: 8000
+
+# Global template example
+str full_domain: "{app_name}.{environment}.{domain}"
+str app_url: "https://{full_domain}"
+
+Server:
+ *str name:
+  int port:
+  str hostname:
+  str full_url:
+  - web1, 80, {name}.{domain}, "http://{hostname}:{port}"
+  - web2, 443, {name}.{domain}, "https://{hostname}:{port}"
+  - api, 3000, api.{domain}, "https://{hostname}:{port}/api"
+
+Database:
+ *str name:
+  str connection_url:
+  - primary, "postgresql://{name}.{domain}:5432/{app_name}"
+  - replica, "postgresql://{name}.{domain}:5433/{app_name}"

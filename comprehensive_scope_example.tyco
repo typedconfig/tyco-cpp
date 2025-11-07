@@ -1,0 +1,42 @@
+# Comprehensive Enhanced Scope Resolution Example
+# This demonstrates all scope resolution features
+
+# Global variables
+str company: "TechCorp"
+str environment: "production" 
+str region: "us-west-2"
+str protocol: "https"
+
+# Global template using other globals
+str base_domain: "{company}.{environment}.{region}.example.com"
+str api_base: "{protocol}://{base_domain}"
+
+# Demonstrate different scope resolution patterns
+Application:
+ *str name:
+  str environment:
+  str description:
+  str local_url:
+  str global_url:
+  str mixed_url:
+  # Various scope patterns:
+  # {name} = local field value
+  # {global.company} = explicit global access
+  # {environment} = local field (overrides global)
+  # {global.environment} = explicit global access
+  - frontend, staging, "Frontend app {name}", "http://{name}.local", "{global.protocol}://app.{global.base_domain}", "{name}-{global.company}-{global.environment}"
+  - backend, development, "Backend service {name}", "http://{name}.local", "{global.protocol}://api.{global.base_domain}", "{name}-{global.company}-{global.environment}"
+
+# Show isolation between structs
+Service:
+ *str name:
+  str type:
+  str endpoint:
+  - auth, microservice, "{global.api_base}/{name}"
+  - payment, microservice, "{global.api_base}/{name}"
+
+# Demonstrate unresolved variables (for testing robustness)
+Test:
+ *str field:
+  # This should gracefully handle missing variables
+  - Known: {global.company}, Unknown: {missing_var}, Parent: {..somevar}

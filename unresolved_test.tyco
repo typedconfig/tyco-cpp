@@ -1,0 +1,5 @@
+str company: TechCorp
+
+Test:
+ *str message:
+  - Known-{global.company}-Unknown-{missing_var}

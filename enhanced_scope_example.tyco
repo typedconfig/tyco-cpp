@@ -1,0 +1,25 @@
+# Enhanced scope resolution test
+str name: "Global App Name"
+str environment: "production"
+str version: "1.0.0"
+
+# Global template using other globals
+str app_info: "{name} version {version} running in {environment}"
+
+# Test explicit global access
+Server:
+ *str name:
+  str environment:
+  str local_description:
+  str global_description:
+  # Local scope: {name} and {environment} use struct field values
+  # Explicit global: {global.name} and {global.environment} use global values
+  - web1, staging, "Server {name} in {environment}", "Server {name} for {global.name} ({global.environment})"
+  - web2, development, "Server {name} in {environment}", "Server {name} for {global.name} ({global.environment})"
+
+# Another struct to show scope isolation
+Database:
+ *str name:
+  str connection:
+  - primary, "{global.name}-{name}-{global.environment}"
+  - replica, "{global.name}-{name}-{global.environment}"

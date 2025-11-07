@@ -1,0 +1,25 @@
+str app_name: ecommerce
+str environment: staging 
+str region: us-west-2
+int base_port: 3000
+str protocol: https
+
+# Nested template expansion
+str base_domain: "{app_name}-{environment}.{region}.amazonaws.com"
+str api_url: "{protocol}://{base_domain}"
+
+Service:
+ *str name:
+  int port:
+  str endpoint:
+  str health_url:
+  - frontend, 80, "{name}.{base_domain}", "{api_url}/{name}/health"
+  - backend, 8080, "api.{base_domain}", "{protocol}://api.{base_domain}/health"
+  - worker, {base_port}, "worker-{environment}.{region}.internal", "{protocol}://worker-{environment}.{region}.internal:{port}/status"
+
+Database:
+ *str role:
+  str host:
+  str connection_string:
+  - primary, "db-{environment}-{region}.rds.amazonaws.com", "postgresql://user:pass@{host}:5432/{app_name}"
+  - replica, "db-{environment}-{region}-ro.rds.amazonaws.com", "postgresql://user:pass@{host}:5432/{app_name}"

@@ -1,0 +1,22 @@
+# Current scope resolution example
+str name: "Global App"
+str environment: "production"
+
+# This works - global variable reference
+str app_info: "Running {name} in {environment}"
+
+Server:
+ *str name:
+  str environment:  
+  str description:
+  # Current: {name} = local field, {environment} = local field
+  # Enhanced: {global.name} = "Global App", {name} = local field
+  - web1, staging, "Server {name} for {environment}"
+  - web2, production, "Server {name} for {environment}"
+
+# What we might want with enhanced scope resolution:
+# Service:
+#  *str name:
+#   str app_reference:
+#   - frontend, "Part of {global.name}"  # Explicit global access
+#   - backend, "Part of {global.name}"   # Explicit global access

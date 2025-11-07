@@ -157,4 +157,4 @@ The parser implementation needs to be completed to match the Python reference im
 
 ## License
 
-[Add your license here]
+MIT License - see the [LICENSE](LICENSE) file for details.

@@ -102,6 +102,88 @@ static std::string normalize_time(const std::string& t) {
     return result;
 }
 
+// Process escape sequences in strings
+// Handles: \n, \t, \r, \b, \f, \", \\, \uXXXX, \UXXXXXXXX
+static std::string process_escape_sequences(const std::string& str) {
+    std::string result;
+    result.reserve(str.length());
+    
+    for (size_t i = 0; i < str.length(); ++i) {
+        if (str[i] == '\\' && i + 1 < str.length()) {
+            char next = str[i + 1];
+            switch (next) {
+                case 'n':  result += '\n'; i++; break;
+                case 't':  result += '\t'; i++; break;
+                case 'r':  result += '\r'; i++; break;
+                case 'b':  result += '\b'; i++; break;
+                case 'f':  result += '\f'; i++; break;
+                case '"':  result += '"';  i++; break;
+                case '\\': result += '\\'; i++; break;
+                case 'u':  // Unicode \uXXXX
+                    if (i + 5 < str.length()) {
+                        std::string hex = str.substr(i + 2, 4);
+                        try {
+                            int codepoint = std::stoi(hex, nullptr, 16);
+                            // Simple UTF-8 encoding for BMP characters
+                            if (codepoint < 0x80) {
+                                result += static_cast<char>(codepoint);
+                            } else if (codepoint < 0x800) {
+                                result += static_cast<char>(0xC0 | (codepoint >> 6));
+                                result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                            } else {
+                                result += static_cast<char>(0xE0 | (codepoint >> 12));
+                                result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                                result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                            }
+                            i += 5;
+                        } catch (...) {
+                            result += str[i];  // Keep backslash if invalid
+                        }
+                    } else {
+                        result += str[i];
+                    }
+                    break;
+                case 'U':  // Unicode \UXXXXXXXX
+                    if (i + 9 < str.length()) {
+                        std::string hex = str.substr(i + 2, 8);
+                        try {
+                            int codepoint = std::stoi(hex, nullptr, 16);
+                            // Very simplified UTF-8 encoding
+                            if (codepoint < 0x80) {
+                                result += static_cast<char>(codepoint);
+                            } else if (codepoint < 0x800) {
+                                result += static_cast<char>(0xC0 | (codepoint >> 6));
+                                result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                            } else if (codepoint < 0x10000) {
+                                result += static_cast<char>(0xE0 | (codepoint >> 12));
+                                result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                                result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                            } else {
+                                result += static_cast<char>(0xF0 | (codepoint >> 18));
+                                result += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                                result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                                result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                            }
+                            i += 9;
+                        } catch (...) {
+                            result += str[i];
+                        }
+                    } else {
+                        result += str[i];
+                    }
+                    break;
+                default:
+                    result += str[i];  // Keep backslash for unknown escapes
+                    break;
+            }
+        } else {
+            result += str[i];
+        }
+    }
+    
+    return result;
+}
+
 // Strip inline comments (everything after #)
 static std::string strip_comment(const std::string& str) {
     size_t pos = str.find('#');
@@ -147,25 +229,7 @@ static std::string parse_string_literal(const std::string& token) {
     // Basic string (")
     if (first_char == '"' && trimmed.back() == '"' && trimmed.length() >= 2) {
         std::string content = trimmed.substr(1, trimmed.length() - 2);
-        // Process escape sequences
-        std::string result;
-        for (size_t i = 0; i < content.length(); ++i) {
-            if (content[i] == '\\' && i + 1 < content.length()) {
-                char next = content[i + 1];
-                switch (next) {
-                    case 'n': result += '\n'; break;
-                    case 't': result += '\t'; break;
-                    case 'r': result += '\r'; break;
-                    case '\\': result += '\\'; break;
-                    case '"': result += '"'; break;
-                    default: result += next; break;
-                }
-                ++i;
-            } else {
-                result += content[i];
-            }
-        }
-        return result;
+        return process_escape_sequences(content);
     }
     
     // Literal string (')

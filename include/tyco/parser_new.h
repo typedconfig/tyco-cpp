@@ -121,7 +121,7 @@ public:
 class TycoTime : public TycoValue {
     std::string value;
 public:
-    explicit TycoTime(const std::string& v) : value(v) {}
+    explicit TycoTime(const std::string& v);  // Normalizes in constructor
     TycoType type() const override { return TycoType::Time; }
     std::string to_string() const override { return value; }
     std::string as_string() const override { return value; }
@@ -131,7 +131,7 @@ public:
 class TycoDateTime : public TycoValue {
     std::string value;
 public:
-    explicit TycoDateTime(const std::string& v) : value(v) {}
+    explicit TycoDateTime(const std::string& v);  // Normalizes in constructor
     TycoType type() const override { return TycoType::DateTime; }
     std::string to_string() const override { return value; }
     std::string as_string() const override { return value; }

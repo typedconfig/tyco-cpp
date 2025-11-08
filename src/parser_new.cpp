@@ -35,6 +35,73 @@ static bool has_template(const std::string& str) {
     return str.find('{') != std::string::npos && str.find('}') != std::string::npos;
 }
 
+// Normalize datetime to ISO 8601 format
+// Converts: "2025-01-15 14:30:00Z" -> "2025-01-15T14:30:00+00:00"
+// Converts: "2025-01-15 14:30:00-08:00" -> "2025-01-15T14:30:00-08:00"
+static std::string normalize_datetime(const std::string& dt) {
+    std::string result = dt;
+    
+    // Replace space with T
+    size_t space_pos = result.find(' ');
+    if (space_pos != std::string::npos) {
+        result[space_pos] = 'T';
+    }
+    
+    // Replace Z with +00:00
+    if (result.back() == 'Z') {
+        result.pop_back();
+        result += "+00:00";
+    }
+    
+    // Normalize fractional seconds to 6 digits
+    // Find the decimal point in the time portion
+    size_t dot_pos = result.find('.');
+    if (dot_pos != std::string::npos) {
+        // Find the end of fractional part (before timezone or end)
+        size_t tz_start = result.find_first_of("+-", dot_pos);
+        if (tz_start == std::string::npos) {
+            tz_start = result.length();
+        }
+        
+        std::string fractional = result.substr(dot_pos + 1, tz_start - dot_pos - 1);
+        std::string tz_part = result.substr(tz_start);
+        
+        // Pad or truncate to 6 digits
+        if (fractional.length() < 6) {
+            fractional.append(6 - fractional.length(), '0');
+        } else if (fractional.length() > 6) {
+            fractional = fractional.substr(0, 6);
+        }
+        
+        result = result.substr(0, dot_pos + 1) + fractional + tz_part;
+    }
+    
+    return result;
+}
+
+// Normalize time to 6 decimal places for fractional seconds
+// Converts: "14:30:00.123" -> "14:30:00.123000"
+static std::string normalize_time(const std::string& t) {
+    std::string result = t;
+    
+    // Find decimal point
+    size_t dot_pos = result.find('.');
+    if (dot_pos != std::string::npos) {
+        std::string fractional = result.substr(dot_pos + 1);
+        
+        // Pad to 6 digits
+        if (fractional.length() < 6) {
+            fractional.append(6 - fractional.length(), '0');
+        } else if (fractional.length() > 6) {
+            fractional = fractional.substr(0, 6);
+        }
+        
+        result = result.substr(0, dot_pos + 1) + fractional;
+    }
+    
+    return result;
+}
+
 // Strip inline comments (everything after #)
 static std::string strip_comment(const std::string& str) {
     size_t pos = str.find('#');
@@ -148,6 +215,12 @@ static int64_t parse_integer(const std::string& token) {
         throw std::runtime_error("Failed to parse integer '" + token + "': " + e.what());
     }
 }
+
+// TycoTime constructor - normalizes fractional seconds to 6 digits
+TycoTime::TycoTime(const std::string& v) : value(normalize_time(v)) {}
+
+// TycoDateTime constructor - normalizes to ISO 8601 format
+TycoDateTime::TycoDateTime(const std::string& v) : value(normalize_datetime(v)) {}
 
 // TycoString template rendering
 void TycoString::render_templates(TycoContext* context, TycoInstance* parent) {

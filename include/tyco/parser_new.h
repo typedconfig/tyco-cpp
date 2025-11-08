@@ -160,6 +160,7 @@ public:
 class TycoInstance : public TycoValue {
     std::string struct_name;
     std::unordered_map<std::string, std::shared_ptr<TycoValue>> attributes;
+    std::vector<std::string> field_order;  // Track insertion order
     TycoInstance* parent_instance;
     
 public:
@@ -170,6 +171,9 @@ public:
     std::shared_ptr<TycoValue> clone() const override;
     
     void set_attribute(const std::string& name, std::shared_ptr<TycoValue> value) {
+        if (attributes.find(name) == attributes.end()) {
+            field_order.push_back(name);
+        }
         attributes[name] = value;
     }
     
@@ -178,8 +182,21 @@ public:
         return it != attributes.end() ? it->second : nullptr;
     }
     
+    bool has_attribute(const std::string& name) const {
+        return attributes.find(name) != attributes.end();
+    }
+    
+    void remove_attribute(const std::string& name) {
+        attributes.erase(name);
+        field_order.erase(std::remove(field_order.begin(), field_order.end(), name), field_order.end());
+    }
+    
     const std::unordered_map<std::string, std::shared_ptr<TycoValue>>& get_attributes() const {
         return attributes;
+    }
+    
+    const std::vector<std::string>& get_field_order() const {
+        return field_order;
     }
     
     std::string get_struct_name() const { return struct_name; }
@@ -219,8 +236,9 @@ struct FieldSchema {
     bool is_primary_key;
     bool is_nullable;
     bool is_array;
+    std::shared_ptr<TycoValue> default_value;
     
-    FieldSchema() : is_primary_key(false), is_nullable(false), is_array(false) {}
+    FieldSchema() : is_primary_key(false), is_nullable(false), is_array(false), default_value(nullptr) {}
 };
 
 class TycoStruct {
@@ -256,12 +274,17 @@ public:
 // Main context class
 class TycoContext {
     std::unordered_map<std::string, std::shared_ptr<TycoValue>> globals;
+    std::vector<std::string> global_order;  // Track insertion order
     std::unordered_map<std::string, std::shared_ptr<TycoStruct>> structs;
+    std::vector<std::string> struct_order;  // Track insertion order
     
 public:
     TycoContext() = default;
     
     void set_global(const std::string& name, std::shared_ptr<TycoValue> value) {
+        if (globals.find(name) == globals.end()) {
+            global_order.push_back(name);
+        }
         globals[name] = value;
     }
     
@@ -274,7 +297,14 @@ public:
         return globals;
     }
     
+    const std::vector<std::string>& get_global_order() const {
+        return global_order;
+    }
+    
     void add_struct(std::shared_ptr<TycoStruct> s) {
+        if (structs.find(s->get_name()) == structs.end()) {
+            struct_order.push_back(s->get_name());
+        }
         structs[s->get_name()] = s;
     }
     
@@ -287,9 +317,16 @@ public:
         return structs;
     }
     
+    const std::vector<std::string>& get_struct_order() const {
+        return struct_order;
+    }
+    
     // Rendering pipeline
     void render();
     std::string to_json() const;
+    
+    // Resolve inline instances with positional args (_arg0, _arg1, etc.)
+    void resolve_inline_instances();
 };
 
 // Lexer and parser

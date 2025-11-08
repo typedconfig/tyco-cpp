@@ -1,6 +1,7 @@
 #include "tyco/parser_new.h"
 #include <fstream>
 #include <sstream>
+#include <iostream>
 #include <algorithm>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -217,12 +218,28 @@ static std::string parse_string_literal(const std::string& token) {
     
     char first_char = trimmed.front();
     
-    // Multiline string (""")
+    // Triple double-quoted string (""")
     if (starts_with(trimmed, "\"\"\"")) {
         size_t end_pos = trimmed.find("\"\"\"", 3);
         if (end_pos == std::string::npos) {
-            throw std::runtime_error("Unclosed multiline string");
+            throw std::runtime_error("Unclosed triple-quoted string");
         }
+        std::string content = trimmed.substr(3, end_pos - 3);
+        // Strip leading newline if present (common pattern for readability)
+        if (!content.empty() && content[0] == '\n') {
+            content = content.substr(1);
+        }
+        // Process escape sequences in triple-quoted strings
+        return process_escape_sequences(content);
+    }
+    
+    // Triple single-quoted string (''')
+    if (starts_with(trimmed, "'''")) {
+        size_t end_pos = trimmed.find("'''", 3);
+        if (end_pos == std::string::npos) {
+            throw std::runtime_error("Unclosed triple-quoted string");
+        }
+        // Return content as-is (literal, no escape processing)
         return trimmed.substr(3, end_pos - 3);
     }
     
@@ -335,7 +352,10 @@ void TycoString::render_templates(TycoContext* context, TycoInstance* parent) {
         result.replace(match.position(), match.length(), replacement);
     }
     
-    value = result;
+    // Process escape sequences in the expanded template
+    // (the template itself had escapes processed at parse time, but substituted
+    // content may contain escape sequences that need processing)
+    value = process_escape_sequences(result);
     is_template = false;
 }
 
@@ -424,8 +444,106 @@ std::shared_ptr<TycoInstance> TycoStruct::find_by_primary_key(const std::string&
     return it != mapped_instances.end() ? it->second : nullptr;
 }
 
+// TycoContext - resolve inline instances
+void TycoContext::resolve_inline_instances() {
+    std::function<void(std::shared_ptr<TycoValue>, const std::string&)> resolve_instance_args;
+    resolve_instance_args = [&](std::shared_ptr<TycoValue> val, const std::string& expected_type) {
+        if (!val) return;
+        
+        if (val->type() == TycoType::Instance) {
+            auto inst = std::dynamic_pointer_cast<TycoInstance>(val);
+            auto attrs = inst->get_attributes();
+            
+            // Check if this instance has _argN fields that need resolution
+            std::vector<std::string> arg_keys;
+            for (const auto& [key, attr_val] : attrs) {
+                if (key.substr(0, 4) == "_arg") {
+                    arg_keys.push_back(key);
+                }
+            }
+            
+            if (!arg_keys.empty()) {
+                // This instance needs resolution - get struct definition
+                std::string struct_name = inst->get_struct_name();
+                auto struct_def = get_struct(struct_name);
+                
+                if (struct_def) {
+                    const auto& fields = struct_def->get_fields();
+                    
+                    // Sort arg keys by number (_arg0, _arg1, etc.)
+                    std::sort(arg_keys.begin(), arg_keys.end(), [](const std::string& a, const std::string& b) {
+                        int num_a = std::stoi(a.substr(4));
+                        int num_b = std::stoi(b.substr(4));
+                        return num_a < num_b;
+                    });
+                    
+                    // Map _argN to actual field names  
+                    for (size_t i = 0; i < arg_keys.size() && i < fields.size(); ++i) {
+                        const std::string& arg_key = arg_keys[i];
+                        const std::string& field_name = fields[i].name;
+                        const std::string& field_type = fields[i].type_name;
+                        auto arg_val = inst->get_attribute(arg_key);
+                        
+                        // The arg_val is currently a string - convert to proper type
+                        if (arg_val && arg_val->type() == TycoType::String) {
+                            std::string str_val = arg_val->as_string();
+                            std::shared_ptr<TycoValue> typed_val;
+                            
+                            // Parse based on field type
+                            if (field_type == "int") {
+                                typed_val = std::make_shared<TycoInt>(std::stoll(str_val));
+                            } else if (field_type == "float") {
+                                typed_val = std::make_shared<TycoFloat>(std::stod(str_val));
+                            } else if (field_type == "bool") {
+                                typed_val = std::make_shared<TycoBool>(str_val == "true");
+                            } else {
+                                // Keep as string or other types
+                                typed_val = arg_val;
+                            }
+                            
+                            inst->set_attribute(field_name, typed_val);
+                        } else {
+                            inst->set_attribute(field_name, arg_val);
+                        }
+                    }
+                    
+                    // Remove _argN keys
+                    for (const std::string& arg_key : arg_keys) {
+                        inst->remove_attribute(arg_key);
+                    }
+                }
+            }
+            
+            // Recursively resolve nested instances
+            for (const auto& [key, attr_val] : inst->get_attributes()) {
+                resolve_instance_args(attr_val, "");
+            }
+        } else if (val->type() == TycoType::Array) {
+            auto arr = std::dynamic_pointer_cast<TycoArray>(val);
+            for (size_t i = 0; i < arr->size(); ++i) {
+                resolve_instance_args(arr->get(i), "");
+            }
+        }
+    };
+    
+    // Resolve in globals
+    for (auto& [name, val] : globals) {
+        resolve_instance_args(val, "");
+    }
+    
+    // Resolve in struct instances
+    for (auto& [name, struct_def] : structs) {
+        for (const auto& inst : struct_def->get_instances()) {
+            resolve_instance_args(std::static_pointer_cast<TycoValue>(inst), "");
+        }
+    }
+}
+
 // TycoContext rendering pipeline
 void TycoContext::render() {
+    // Step 0: Resolve inline instances with positional args
+    resolve_inline_instances();
+    
     // Step 1: Build primary key maps
     for (auto& [name, struct_def] : structs) {
         struct_def->build_primary_key_map();
@@ -512,8 +630,12 @@ static json value_to_json(const std::shared_ptr<TycoValue>& val) {
         case TycoType::Instance: {
             auto inst = std::dynamic_pointer_cast<TycoInstance>(val);
             json j_obj = json::object();
-            for (const auto& [key, attr] : inst->get_attributes()) {
-                j_obj[key] = value_to_json(attr);
+            // Use field order to preserve schema order in output
+            for (const auto& key : inst->get_field_order()) {
+                auto attr = inst->get_attribute(key);
+                if (attr) {
+                    j_obj[key] = value_to_json(attr);
+                }
             }
             return j_obj;
         }
@@ -532,18 +654,25 @@ static json value_to_json(const std::shared_ptr<TycoValue>& val) {
 std::string TycoContext::to_json() const {
     json result = json::object();
     
-    // Add globals
-    for (const auto& [name, val] : globals) {
-        result[name] = value_to_json(val);
+    // Add globals in order
+    for (const auto& name : get_global_order()) {
+        auto val = get_global(name);
+        if (val) {
+            result[name] = value_to_json(val);
+        }
     }
     
-    // Add struct instances
-    for (const auto& [name, struct_def] : structs) {
-        json instances = json::array();
-        for (const auto& inst : struct_def->get_instances()) {
-            instances.push_back(value_to_json(inst));
+    // Add struct instances in order
+    for (const auto& name : get_struct_order()) {
+        auto struct_def = get_struct(name);
+        if (struct_def && !struct_def->get_primary_key_field().empty()) {
+            // Only serialize structs with primary keys (skip inline-only structs)
+            json instances = json::array();
+            for (const auto& inst : struct_def->get_instances()) {
+                instances.push_back(value_to_json(inst));
+            }
+            result[name] = instances;
         }
-        result[name] = instances;
     }
     
     return result.dump(2);
@@ -637,20 +766,30 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
         return std::make_shared<TycoDateTime>(parse_string_literal(trimmed));
     }
     
-    // String
+        // String
     if (type_name == "str") {
+        // Check if it's a literal string BEFORE parsing
+        bool is_literal = starts_with(trimmed, "'");  // ' or '''
         std::string str_val = parse_string_literal(trimmed);
-        bool is_template = has_template(str_val);
+        bool is_template = !is_literal && has_template(str_val);
         return std::make_shared<TycoString>(str_val, is_template);
     }
     
-    // Reference: StructName(primary_key_value)
-    std::regex ref_regex(R"(([A-Z][a-zA-Z0-9_]*)\(([^)]+)\))");
+    // Struct instance: StructName(...) - can be reference or inline instance
+    std::regex struct_call_regex(R"(([A-Z][a-zA-Z0-9_]*)\(([^)]*)\))");
     std::smatch match;
-    if (std::regex_match(trimmed, match, ref_regex)) {
+    if (std::regex_match(trimmed, match, struct_call_regex)) {
         std::string struct_name = match[1].str();
-        std::string pk_value = parse_string_literal(match[2].str());
-        return std::make_shared<TycoReference>(struct_name, pk_value);
+        std::string args_str = match[2].str();
+        
+        // If args contain comma, it's an inline instance
+        if (args_str.find(',') != std::string::npos) {
+            return parse_inline_instance(struct_name + "(" + args_str + ")", struct_name);
+        } else {
+            // Single argument - it's a reference by primary key
+            std::string pk_value = parse_string_literal(args_str);
+            return std::make_shared<TycoReference>(struct_name, pk_value);
+        }
     }
     
     // Inline instance: {field1: value1, field2: value2}
@@ -699,8 +838,101 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
 }
 
 std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& content, const std::string& struct_name) {
-    // TODO: Implement inline instance parsing
-    throw std::runtime_error("Inline instances not yet implemented");
+    // Parse Person(arg1, arg2) or {field1: val1, field2: val2} syntax
+    std::string args_str;
+    
+    if (content.front() == '{' && content.back() == '}') {
+        // {field: value, ...} format
+        args_str = content.substr(1, content.length() - 2);
+    } else if (content.find('(') != std::string::npos) {
+        // StructName(arg1, arg2) format
+        size_t start = content.find('(');
+        size_t end = content.rfind(')');
+        if (start == std::string::npos || end == std::string::npos) {
+            throw std::runtime_error("Malformed inline instance: " + content);
+        }
+        args_str = content.substr(start + 1, end - start - 1);
+    } else {
+        throw std::runtime_error("Unknown inline instance format: " + content);
+    }
+    
+    // Get struct definition to get fields
+    // Note: We may not have the struct definition yet if it's defined later
+    // For now, create an instance without validation
+    auto instance = std::make_shared<TycoInstance>(struct_name);
+    
+    // Parse arguments (similar to instance line parsing)
+    std::vector<std::pair<std::string, std::string>> field_values;
+    
+    // Split by comma while respecting quotes and brackets
+    std::string current;
+    int depth = 0;
+    bool in_quotes = false;
+    char quote_char = 0;
+    
+    for (size_t i = 0; i < args_str.length(); ++i) {
+        char c = args_str[i];
+        
+        if (!in_quotes) {
+            if (c == '"' || c == '\'') {
+                in_quotes = true;
+                quote_char = c;
+                current += c;
+                continue;
+            } else if (c == '[' || c == '{' || c == '(') {
+                depth++;
+            } else if (c == ']' || c == '}' || c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                if (!trim(current).empty()) {
+                    field_values.push_back({"", trim(current)});
+                }
+                current.clear();
+                continue;
+            }
+        } else {
+            if (c == quote_char && (i == 0 || args_str[i-1] != '\\')) {
+                in_quotes = false;
+            }
+        }
+        
+        current += c;
+    }
+    
+    if (!trim(current).empty()) {
+        field_values.push_back({"", trim(current)});
+    }
+    
+    // Check for "field: value" pattern
+    std::regex field_value_regex(R"(^([a-z_][a-zA-Z0-9_]*)\s*:\s*(.+)$)");
+    for (auto& [field_name, value_str] : field_values) {
+        std::smatch match;
+        if (std::regex_match(value_str, match, field_value_regex)) {
+            field_name = match[1].str();
+            value_str = match[2].str();
+        }
+    }
+    
+    // For inline instances, we may not have struct definition yet
+    // Store as positional or named arguments
+    size_t positional_index = 0;
+    for (const auto& [field_name, value_str] : field_values) {
+        std::string actual_field_name;
+        
+        if (field_name.empty()) {
+            // Positional argument - use temporary name since we don't have struct def
+            // These will need to be resolved later if struct info is needed
+            actual_field_name = "_arg" + std::to_string(positional_index++);
+        } else {
+            actual_field_name = field_name;
+        }
+        
+        // Parse value without knowing type - use generic string parsing
+        auto val = parse_value(value_str, "str");  // Default to string for now
+        instance->set_attribute(actual_field_name, val);
+    }
+    
+    return instance;
 }
 
 std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content) {
@@ -720,101 +952,15 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
     std::shared_ptr<TycoStruct> current_struct;
     std::vector<std::string> instance_lines;
     
-    for (const std::string& line : lines) {
-        std::string trimmed = trim(line);
+    // Lambda to parse accumulated instance lines for a struct
+    auto parse_struct_instances = [this](std::shared_ptr<TycoStruct> struct_def,
+                                         const std::vector<std::string>& inst_lines) {
+        if (!struct_def || inst_lines.empty()) return;
         
-        // Skip empty lines and comments
-        if (trimmed.empty() || trimmed[0] == '#') continue;
+        const auto& fields = struct_def->get_fields();
         
-        // Check for struct definition: "StructName:"
-        std::regex struct_def_regex(R"(([A-Z][a-zA-Z0-9_]*):)");
-        std::smatch match;
-        
-        if (std::regex_match(trimmed, match, struct_def_regex)) {
-            // Save previous struct if any
-            if (current_struct && state == ParseState::InStructInstances) {
-                // Parse instance lines
-                // TODO: Implement instance parsing
-            }
-            
-            std::string struct_name = match[1].str();
-            current_struct = std::make_shared<TycoStruct>(struct_name);
-            context->add_struct(current_struct);
-            state = ParseState::InStructSchema;
-            instance_lines.clear();
-            continue;
-        }
-        
-        // Check for field schema or global variable
-        // Type can be: lowercase (str, int, etc.) OR uppercase (Person, Host, etc.) OR array syntax
-        std::regex field_regex(R"(\s*(\*)?(\?)?([a-zA-Z][a-zA-Z0-9_]*)(\[\])?\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
-        
-        if (std::regex_match(line, match, field_regex)) {
-            bool is_primary = !match[1].str().empty();
-            bool is_nullable = !match[2].str().empty();
-            std::string type_str = match[3].str();
-            bool is_array = !match[4].str().empty();
-            std::string name = match[5].str();
-            std::string value_str = match[6].str();
-            
-            // Build full type string
-            std::string base_type = type_str;
-            if (is_array) {
-                type_str += "[]";
-            }
-            
-            if (state == ParseState::InStructSchema || state == ParseState::TopLevel) {
-                if (current_struct) {
-                    // Field schema
-                    FieldSchema field;
-                    field.name = name;
-                    field.type_name = base_type;
-                    field.is_primary_key = is_primary;
-                    field.is_nullable = is_nullable;
-                    field.is_array = is_array;
-                    current_struct->add_field(field);
-                    
-                    if (!value_str.empty()) {
-                        // Default value - store for later
-                        // TODO: Handle defaults
-                    }
-                } else {
-                    // Global variable
-                    if (!value_str.empty()) {
-                        auto val = parse_value(trim(value_str), type_str);
-                        context->set_global(name, val);
-                    }
-                }
-            }
-            continue;
-        }
-        
-        // Check for instance data line: "  - value1, value2, ..."
-        if (starts_with(trimmed, "-")) {
-            if (current_struct) {
-                state = ParseState::InStructInstances;
-                instance_lines.push_back(trimmed.substr(1));  // Remove "-"
-            }
-            continue;
-        }
-        
-        // If in instance state and line is indented (not starting with -), it's a continuation
-        if (state == ParseState::InStructInstances && !trimmed.empty() && 
-            line.length() > 0 && (line[0] == ' ' || line[0] == '\t') && !starts_with(trimmed, "-")) {
-            // Continuation of previous instance line
-            if (!instance_lines.empty()) {
-                instance_lines.back() += " " + trimmed;
-            }
-            continue;
-        }
-    }
-    
-    // Parse remaining instances
-    if (current_struct && !instance_lines.empty()) {
-        const auto& fields = current_struct->get_fields();
-        
-        for (const std::string& inst_line : instance_lines) {
-            auto instance = std::make_shared<TycoInstance>(current_struct->get_name());
+        for (const std::string& inst_line : inst_lines) {
+            auto instance = std::make_shared<TycoInstance>(struct_def->get_name());
             
             // Parse field values (can be positional or named)
             std::vector<std::pair<std::string, std::string>> field_values;  // (field_name, value_str)
@@ -832,11 +978,14 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     if (c == '"' || c == '\'') {
                         in_quotes = true;
                         quote_char = c;
+                        current += c;
+                        continue;
                     } else if (c == '[' || c == '{' || c == '(') {
                         depth++;
                     } else if (c == ']' || c == '}' || c == ')') {
                         depth--;
                     } else if (c == ',' && depth == 0) {
+                        // Field separator
                         if (!trim(current).empty()) {
                             field_values.push_back({"", trim(current)});
                         }
@@ -857,12 +1006,21 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             }
             
             // Check each value for "field: value" pattern
-            std::regex field_value_regex(R"(^([a-z_][a-zA-Z0-9_]*)\s*:\s*(.+)$)");
             for (auto& [field_name, value_str] : field_values) {
-                std::smatch match;
-                if (std::regex_match(value_str, match, field_value_regex)) {
-                    field_name = match[1].str();
-                    value_str = match[2].str();
+                // Check if it starts with a valid field name followed by colon
+                size_t colon_pos = value_str.find(':');
+                if (colon_pos != std::string::npos) {
+                    std::string potential_field = value_str.substr(0, colon_pos);
+                    potential_field = trim(potential_field);
+                    
+                    // Check if it's a valid field name
+                    if (!potential_field.empty() && 
+                        std::isalpha(potential_field[0]) &&
+                        std::all_of(potential_field.begin(), potential_field.end(), 
+                                    [](char c) { return std::isalnum(c) || c == '_'; })) {
+                        field_name = potential_field;
+                        value_str = trim(value_str.substr(colon_pos + 1));
+                    }
                 }
             }
             
@@ -914,9 +1072,195 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                 instance->set_attribute(actual_field_name, val);
             }
             
-            current_struct->add_instance(instance);
+            // Apply default values for any fields not specified
+            for (const auto& field : fields) {
+                if (!instance->has_attribute(field.name) && field.default_value) {
+                    instance->set_attribute(field.name, field.default_value);
+                }
+            }
+            
+            struct_def->add_instance(instance);
+        }
+    };
+    
+    // Helper to check if a string contains an unclosed multiline string delimiter
+    auto has_unclosed_multiline = [](const std::string& s, const std::string& delim) -> bool {
+        size_t pos = s.find(delim);
+        if (pos == std::string::npos) return false;
+        // Check if there's a closing delimiter
+        size_t close_pos = s.find(delim, pos + delim.length());
+        return close_pos == std::string::npos;
+    };
+    
+    for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
+        std::string line = lines[line_idx];
+        std::string trimmed = trim(line);
+        
+        // Remove inline comments (but not within strings)
+        size_t comment_pos = trimmed.find('#');
+        if (comment_pos != std::string::npos) {
+            // Simple heuristic: if # is not inside quotes, it's a comment
+            // For now, just strip from # onwards (doesn't handle # in strings perfectly)
+            bool in_string = false;
+            char quote_char = 0;
+            for (size_t i = 0; i < comment_pos; ++i) {
+                if (!in_string && (trimmed[i] == '"' || trimmed[i] == '\'')) {
+                    in_string = true;
+                    quote_char = trimmed[i];
+                } else if (in_string && trimmed[i] == quote_char && (i == 0 || trimmed[i-1] != '\\')) {
+                    in_string = false;
+                }
+            }
+            if (!in_string) {
+                trimmed = trim(trimmed.substr(0, comment_pos));
+            }
+        }
+        
+        // Skip empty lines
+        if (trimmed.empty()) continue;
+        
+        // Check for struct definition: "StructName:"
+        std::regex struct_def_regex(R"(([A-Z][a-zA-Z0-9_]*):)");
+        std::smatch match;
+        
+        if (std::regex_match(trimmed, match, struct_def_regex)) {
+            // Parse instances for previous struct if any
+            if (current_struct && state == ParseState::InStructInstances) {
+                parse_struct_instances(current_struct, instance_lines);
+            }
+            
+            std::string struct_name = match[1].str();
+            current_struct = std::make_shared<TycoStruct>(struct_name);
+            context->add_struct(current_struct);
+            state = ParseState::InStructSchema;
+            instance_lines.clear();
+            continue;
+        }
+        
+        // Check for field schema or global variable
+        // Type can be: lowercase (str, int, etc.) OR uppercase (Person, Host, etc.) OR array syntax
+        std::regex field_regex(R"(\s*(\*)?(\?)?([a-zA-Z][a-zA-Z0-9_]*)(\[\])?\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
+        
+        if (std::regex_match(line, match, field_regex)) {
+            bool is_primary = !match[1].str().empty();
+            bool is_nullable = !match[2].str().empty();
+            std::string type_str = match[3].str();
+            bool is_array = !match[4].str().empty();
+            std::string name = match[5].str();
+            std::string value_str = match[6].str();
+            
+            // Check if value contains an unclosed multiline string
+            if (!value_str.empty() && (has_unclosed_multiline(value_str, "\"\"\"") || 
+                                       has_unclosed_multiline(value_str, "'''"))) {
+                // Read subsequent lines until we find the closing delimiter
+                std::string delimiter = value_str.find("\"\"\"") != std::string::npos ? "\"\"\"" : "'''";
+                std::string accumulated = value_str;
+                
+                // Find position of opening delimiter
+                size_t open_pos = accumulated.find(delimiter);
+                
+                while (line_idx + 1 < lines.size()) {
+                    ++line_idx;
+                    std::string next_line = lines[line_idx];
+                    accumulated += "\n" + next_line;
+                    
+                    // Check if we now have a closing delimiter
+                    size_t close_pos = accumulated.find(delimiter, open_pos + delimiter.length());
+                    if (close_pos != std::string::npos) {
+                        value_str = accumulated;
+                        break;
+                    }
+                }
+            }
+            
+            // Build full type string
+            std::string base_type = type_str;
+            if (is_array) {
+                type_str += "[]";
+            }
+            
+            // Check if this is a global (non-indented line when we might be in a struct)
+            bool is_global_line = !starts_with(line, " ") && !starts_with(line, "\t");
+            
+            if ((state == ParseState::InStructSchema || state == ParseState::TopLevel) ||
+                (state == ParseState::InStructInstances && is_global_line)) {
+                if (current_struct && !is_global_line) {
+                    // Field schema
+                    FieldSchema field;
+                    field.name = name;
+                    field.type_name = base_type;
+                    field.is_primary_key = is_primary;
+                    field.is_nullable = is_nullable;
+                    field.is_array = is_array;
+                    
+                    if (!value_str.empty()) {
+                        // Default value - parse and store
+                        std::string default_type = is_array ? (base_type + "[]") : type_str;
+                        field.default_value = parse_value(trim(value_str), default_type);
+                    }
+                    
+                    current_struct->add_field(field);
+                } else {
+                    // Global variable
+                    if (!value_str.empty()) {
+                        auto val = parse_value(trim(value_str), type_str);
+                        context->set_global(name, val);
+                    }
+                }
+            }
+            continue;
+        }
+        
+        // Check for instance data line: "  - value1, value2, ..."
+        if (starts_with(trimmed, "-")) {
+            if (current_struct) {
+                state = ParseState::InStructInstances;
+                std::string inst_line = trimmed.substr(1);  // Remove "-"
+                
+                // Handle backslash line continuation
+                while (!inst_line.empty() && inst_line.back() == '\\' && line_idx + 1 < lines.size()) {
+                    inst_line.pop_back();  // Remove trailing backslash
+                    ++line_idx;
+                    std::string next_line = lines[line_idx];
+                    inst_line += trim(next_line);  // Append next line (trimmed)
+                }
+                
+                // Check if this line has an unclosed multiline string
+                if (has_unclosed_multiline(inst_line, "\"\"\"") || has_unclosed_multiline(inst_line, "'''")) {
+                    std::string delimiter = inst_line.find("\"\"\"") != std::string::npos ? "\"\"\"" : "'''";
+                    size_t open_pos = inst_line.find(delimiter);
+                    
+                    // Accumulate lines until we find the closing delimiter
+                    while (line_idx + 1 < lines.size()) {
+                        ++line_idx;
+                        std::string next_line = lines[line_idx];
+                        inst_line += "\n" + next_line;
+                        
+                        size_t close_pos = inst_line.find(delimiter, open_pos + delimiter.length());
+                        if (close_pos != std::string::npos) {
+                            break;
+                        }
+                    }
+                }
+                
+                instance_lines.push_back(inst_line);
+            }
+            continue;
+        }
+        
+        // If in instance state and line is indented (not starting with -), it's a continuation
+        if (state == ParseState::InStructInstances && !trimmed.empty() && 
+            line.length() > 0 && (line[0] == ' ' || line[0] == '\t') && !starts_with(trimmed, "-")) {
+            // Continuation of previous instance line
+            if (!instance_lines.empty()) {
+                instance_lines.back() += " " + trimmed;
+            }
+            continue;
         }
     }
+    
+    // Parse remaining instances for the last struct
+    parse_struct_instances(current_struct, instance_lines);
     
     return context;
 }

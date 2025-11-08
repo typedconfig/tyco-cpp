@@ -660,6 +660,16 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             }
             continue;
         }
+        
+        // If in instance state and line is indented (not starting with -), it's a continuation
+        if (state == ParseState::InStructInstances && !trimmed.empty() && 
+            line.length() > 0 && (line[0] == ' ' || line[0] == '\t') && !starts_with(trimmed, "-")) {
+            // Continuation of previous instance line
+            if (!instance_lines.empty()) {
+                instance_lines.back() += " " + trimmed;
+            }
+            continue;
+        }
     }
     
     // Parse remaining instances

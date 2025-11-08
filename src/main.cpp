@@ -1,7 +1,7 @@
 #include <iostream>
 #include <string>
 #include <fstream>
-#include "tyco/parser_new.h"
+#include "tyco/parser.h"
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {

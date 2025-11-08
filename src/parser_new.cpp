@@ -1,4 +1,4 @@
-#include "tyco/parser_new.h"
+#include "tyco/parser.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -1130,8 +1130,18 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             }
             
             std::string struct_name = match[1].str();
-            current_struct = std::make_shared<TycoStruct>(struct_name);
-            context->add_struct(current_struct);
+            
+            // Check if struct already exists (e.g., from an #include)
+            auto existing_struct = context->get_struct(struct_name);
+            if (existing_struct) {
+                // Reuse existing struct
+                current_struct = existing_struct;
+            } else {
+                // Create new struct
+                current_struct = std::make_shared<TycoStruct>(struct_name);
+                context->add_struct(current_struct);
+            }
+            
             state = ParseState::InStructSchema;
             instance_lines.clear();
             continue;
@@ -1209,6 +1219,56 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                 }
             }
             continue;
+        }
+        
+        // Check for default value update: "  fieldname: value" (indented, no type, has colon)
+        // This allows updating defaults after schema definition or in files that include base schemas
+        std::regex default_update_regex(R"(\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
+        if (current_struct && std::regex_match(line, match, default_update_regex)) {
+            std::string field_name = match[1].str();
+            std::string value_str = match[2].str();
+            
+            // Find this field in the struct
+            const auto& fields = current_struct->get_fields();
+            auto field_it = std::find_if(fields.begin(), fields.end(),
+                [&field_name](const FieldSchema& f) { return f.name == field_name; });
+            
+            if (field_it != fields.end()) {
+                // Update the default value for this field
+                // We need to modify the struct's field schema
+                std::vector<FieldSchema> updated_fields;
+                for (const auto& field : fields) {
+                    FieldSchema updated_field = field;
+                    if (field.name == field_name) {
+                        if (!value_str.empty()) {
+                            std::string type_str = field.type_name;
+                            if (field.is_array) {
+                                type_str += "[]";
+                            }
+                            updated_field.default_value = parse_value(trim(value_str), type_str);
+                        } else {
+                            // Empty value removes the default
+                            updated_field.default_value = nullptr;
+                        }
+                    }
+                    updated_fields.push_back(updated_field);
+                }
+                
+                // Replace struct with updated version
+                // Since we can't modify fields directly, we need to create a new struct
+                auto updated_struct = std::make_shared<TycoStruct>(current_struct->get_name());
+                for (const auto& field : updated_fields) {
+                    updated_struct->add_field(field);
+                }
+                // Copy existing instances
+                for (const auto& inst : current_struct->get_instances()) {
+                    updated_struct->add_instance(inst);
+                }
+                context->add_struct(updated_struct);
+                current_struct = updated_struct;
+                
+                continue;
+            }
         }
         
         // Check for instance data line: "  - value1, value2, ..."

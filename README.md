@@ -2,6 +2,21 @@
 
 A C++ parser and library for the Tyco configuration language.
 
+## ⚠️ STATUS: INCOMPLETE - NOT PRODUCTION READY
+
+**This implementation is currently non-compliant with the Tyco v0.1.0 specification.**
+
+- **Compliance Rate:** ~15% (only basic features work)
+- **Test Suite:** 0/11 canonical tests passing
+- **Missing:** References, templates, #include, nullable types, date/time types, and more
+
+📋 **See [`STATUS.md`](./STATUS.md) for current implementation status**  
+📊 **See [`FEATURE_GAP_ANALYSIS.md`](./FEATURE_GAP_ANALYSIS.md) for detailed feature comparison**
+
+**Recommendation:** Use the [Python implementation](../tyco-python) for production. This C++ version needs 2-3 weeks of development to achieve compliance.
+
+---
+
 ## Overview
 
 This library provides a C++ implementation of the Tyco configuration language parser. It uses a hash map-based approach similar to XML parsing libraries in C++, making it suitable for dynamic configuration loading without requiring compile-time knowledge of the configuration structure.
@@ -38,23 +53,25 @@ make
 
 ```bash
 cd build
-./tyco-tests
+./tyco-tests  # Current unit tests (basic only)
 ```
 
-### Using the CLI
+### Using the CLI (Limited Functionality)
 
 ```bash
 cd build
-./tyco-cli config.tyco
+./tyco-cli config.tyco  # Only works with very basic .tyco files
 ```
 
-### Library Usage
+**Note:** Many Tyco features will not work. See STATUS.md for details.
+
+### Library Usage (Current API - Subject to Change)
 
 ```cpp
 #include "tyco/parser.h"
 
 int main() {
-    // Load from file
+    // Load from file (limited feature support)
     tyco::TycoContext context = tyco::load("config.tyco");
     
     // Access global variables (hash map style)
@@ -73,76 +90,89 @@ int main() {
 }
 ```
 
-## API Reference
+**Warning:** This API does not support:
+- References (`Person(primary_key)`)
+- Templates (`{variable}`)
+- Nullable types
+- Date/time types
+- Many other features - see FEATURE_GAP_ANALYSIS.md
 
-### TycoValue
+## Test Suite
 
-The `TycoValue` class is a variant wrapper that can hold any Tyco data type:
+The canonical test suite is included as a git submodule:
 
-```cpp
-// Type checking
-bool is_string() const;
-bool is_int() const;
-bool is_float() const;
-bool is_bool() const;
-bool is_array() const;
-bool is_object() const;
+```bash
+# Initialize submodule
+git submodule update --init --recursive
 
-// Safe access (returns default if wrong type)
-std::string get_string(const std::string& default_val = "") const;
-int64_t get_int(int64_t default_val = 0) const;
-double get_float(double default_val = 0.0) const;
-bool get_bool(bool default_val = false) const;
-
-// Direct access (throws if wrong type)
-const std::string& as_string() const;
-int64_t as_int() const;
-// ... etc
-
-// Container access
-TycoValue& operator[](const std::string& key);  // For objects
-TycoValue& operator[](size_t index);            // For arrays
+# Test files are in:
+tests/shared/inputs/    # 11 .tyco test files
+tests/shared/expected/  # 11 .json expected outputs
 ```
 
-### TycoContext
+**Current test results: 0/11 passing**
 
-The main container for parsed configuration:
+## Development Roadmap
 
-```cpp
-// Global variable access
-const TycoValue& get_global(const std::string& name) const;
-TycoValue& operator[](const std::string& key);
+See `FEATURE_GAP_ANALYSIS.md` for detailed implementation plan.
 
-// Structured object access
-const std::vector<TycoValue>& get_objects(const std::string& type_name) const;
-void add_object(const std::string& type_name, const TycoValue& object);
+**Estimated effort:** 2-3 weeks to achieve full compliance
 
-// Introspection
-std::vector<std::string> get_global_names() const;
-std::vector<std::string> get_object_types() const;
-```
+### Priority Features (Blocking Compliance)
+1. References and primary key system
+2. Template expansion with proper scoping
+3. File inclusion (`#include`)
+4. Date/time/datetime types
+5. Rendering pipeline (3-phase)
+6. Number format parsing (hex/octal/binary)
+7. Proper string literal handling
 
-## Development Status
+## Reference Documentation
 
-This is a skeleton implementation with basic infrastructure in place:
+- **Tyco Specification:** See `../web/v0.1.0.html`
+- **Python Reference:** See `../tyco-python/tyco/parser.py` (canonical implementation)
+- **Test Suite:** See `tests/shared/` (git submodule)
 
-- ✅ Core data structures (TycoValue, TycoContext)
-- ✅ Hash map-based storage
-- ✅ Type-safe variant system
-- ✅ Basic API design
-- ✅ Test framework setup
-- ✅ CMake build system
-- 🚧 **Parser implementation** (currently basic skeleton)
-- 🚧 **Template expansion**
-- 🚧 **Full Tyco syntax support**
+## Architecture (Current vs Planned)
 
-## Next Steps
+### Current Implementation (`parser.h`, `parser.cpp`)
+- Uses `std::variant` for values
+- Basic struct parsing
+- No rendering pipeline
+- **Status:** Non-compliant
 
-1. **Complete Parser Implementation**: Implement full Tyco syntax parsing
-2. **Template System**: Add support for `{variable}` template expansion
-3. **Error Handling**: Improve error reporting and validation
-4. **JSON Export**: Complete the `to_json()` methods
-5. **Performance**: Optimize for large configuration files
+### Planned Implementation (`parser_new.h`, `parser_new.cpp` - WIP)
+- Proper class hierarchy
+- Full feature support matching Python
+- 3-phase rendering pipeline
+- **Status:** In development
+
+## Contributing
+
+**Note:** This implementation is currently being brought up to spec compliance. If you want to contribute:
+
+1. Read `FEATURE_GAP_ANALYSIS.md`
+2. Pick a missing feature
+3. Follow the Python reference implementation
+4. Add tests from canonical test suite
+5. Ensure all tests pass before submitting PR
+
+## Compliance Checklist
+
+- [ ] File inclusion (`#include`)
+- [ ] Primary keys (`*` marker)
+- [ ] References (`Type(key)`)
+- [ ] Nullable types (`?` marker)
+- [ ] Template expansion (`{var}`)
+- [ ] Date/time/datetime types
+- [ ] Number formats (hex/octal/binary)
+- [ ] String literals (multiline, escapes)
+- [ ] Default values
+- [ ] Arrays (all edge cases)
+- [ ] Rendering pipeline
+- [ ] JSON output matching Python
+
+**Progress:** 0/12 features complete
 6. **Documentation**: Add more examples and API documentation
 
 ## Contributing

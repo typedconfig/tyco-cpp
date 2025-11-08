@@ -39,6 +39,13 @@ static bool has_template(const std::string& str) {
 static std::string parse_string_literal(const std::string& token) {
     std::string trimmed = trim(token);
     
+    // Check if it's quoted at all
+    if (trimmed.empty()) {
+        return "";
+    }
+    
+    char first_char = trimmed.front();
+    
     // Multiline string (""")
     if (starts_with(trimmed, "\"\"\"")) {
         size_t end_pos = trimmed.find("\"\"\"", 3);
@@ -49,7 +56,7 @@ static std::string parse_string_literal(const std::string& token) {
     }
     
     // Basic string (")
-    if (trimmed.front() == '"' && trimmed.back() == '"') {
+    if (first_char == '"' && trimmed.back() == '"' && trimmed.length() >= 2) {
         std::string content = trimmed.substr(1, trimmed.length() - 2);
         // Process escape sequences
         std::string result;
@@ -73,34 +80,51 @@ static std::string parse_string_literal(const std::string& token) {
     }
     
     // Literal string (')
-    if (trimmed.front() == '\'' && trimmed.back() == '\'') {
+    if (first_char == '\'' && trimmed.back() == '\'' && trimmed.length() >= 2) {
         return trimmed.substr(1, trimmed.length() - 2);
     }
     
-    throw std::runtime_error("Invalid string literal: " + token);
+    // Bareword (unquoted string) - just return as-is
+    // This is valid for string types in Tyco
+    return trimmed;
 }
 
 // Parse integer with different bases
 static int64_t parse_integer(const std::string& token) {
     std::string trimmed = trim(token);
     
-    // Hex: 0xABC
-    if (starts_with(trimmed, "0x") || starts_with(trimmed, "0X")) {
-        return std::stoll(trimmed.substr(2), nullptr, 16);
+    try {
+        // Handle negative numbers
+        bool is_negative = false;
+        if (trimmed.front() == '-') {
+            is_negative = true;
+            trimmed = trimmed.substr(1);
+        }
+        
+        int64_t result;
+        
+        // Hex: 0xABC
+        if (starts_with(trimmed, "0x") || starts_with(trimmed, "0X")) {
+            result = std::stoll(trimmed.substr(2), nullptr, 16);
+        }
+        // Octal: 0o777
+        else if (starts_with(trimmed, "0o") || starts_with(trimmed, "0O")) {
+            result = std::stoll(trimmed.substr(2), nullptr, 8);
+        }
+        // Binary: 0b1010
+        else if (starts_with(trimmed, "0b") || starts_with(trimmed, "0B")) {
+            result = std::stoll(trimmed.substr(2), nullptr, 2);
+        }
+        // Decimal
+        else {
+            result = std::stoll(trimmed);
+        }
+        
+        return is_negative ? -result : result;
+        
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to parse integer '" + token + "': " + e.what());
     }
-    
-    // Octal: 0o777
-    if (starts_with(trimmed, "0o") || starts_with(trimmed, "0O")) {
-        return std::stoll(trimmed.substr(2), nullptr, 8);
-    }
-    
-    // Binary: 0b1010
-    if (starts_with(trimmed, "0b") || starts_with(trimmed, "0B")) {
-        return std::stoll(trimmed.substr(2), nullptr, 2);
-    }
-    
-    // Decimal
-    return std::stoll(trimmed);
 }
 
 // TycoString template rendering

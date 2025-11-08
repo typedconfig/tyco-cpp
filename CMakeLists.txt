@@ -19,23 +19,34 @@ enable_testing()
 # Include directories
 include_directories(include)
 
-# Source files
-file(GLOB_RECURSE SOURCES "src/parser.cpp")
+# Fetch nlohmann/json for JSON support
+include(FetchContent)
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
+# Source files - using new parser implementation
+set(SOURCES 
+    src/parser_new.cpp
+)
 file(GLOB_RECURSE HEADERS "include/*.h")
 
 # Create library
 add_library(tyco STATIC ${SOURCES} ${HEADERS})
 target_include_directories(tyco PUBLIC include)
+target_link_libraries(tyco PUBLIC nlohmann_json::nlohmann_json)
 
 # CLI executable
 add_executable(tyco-cli src/main.cpp)
 target_link_libraries(tyco-cli tyco)
 
 # Tests with Google Test (optional)
-option(BUILD_TESTS "Build tests" OFF)
+option(BUILD_TESTS "Build tests" ON)
 
 if(BUILD_TESTS)
-    include(FetchContent)
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git

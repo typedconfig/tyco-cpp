@@ -35,6 +35,28 @@ static bool has_template(const std::string& str) {
     return str.find('{') != std::string::npos && str.find('}') != std::string::npos;
 }
 
+// Strip inline comments (everything after #)
+static std::string strip_comment(const std::string& str) {
+    size_t pos = str.find('#');
+    if (pos != std::string::npos) {
+        // Make sure it's not inside quotes
+        bool in_quotes = false;
+        char quote_char = 0;
+        for (size_t i = 0; i < pos; ++i) {
+            if (!in_quotes && (str[i] == '"' || str[i] == '\'')) {
+                in_quotes = true;
+                quote_char = str[i];
+            } else if (in_quotes && str[i] == quote_char && (i == 0 || str[i-1] != '\\')) {
+                in_quotes = false;
+            }
+        }
+        if (!in_quotes) {
+            return trim(str.substr(0, pos));
+        }
+    }
+    return str;
+}
+
 // Parse string literal with proper quote handling
 static std::string parse_string_literal(const std::string& token) {
     std::string trimmed = trim(token);
@@ -439,7 +461,7 @@ std::vector<std::string> TycoLexer::read_file_with_includes(const std::string& f
 }
 
 std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, const std::string& type_name) {
-    std::string trimmed = trim(token);
+    std::string trimmed = trim(strip_comment(token));
     
     // Null
     if (trimmed == "null") {
@@ -587,21 +609,21 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
         }
         
         // Check for field schema or global variable
-        std::regex field_regex(R"(\s*(\*)?(\?)?([a-z][a-zA-Z0-9_]*|\[[a-zA-Z0-9_\[\]]+\])\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
+        // Type can be: lowercase (str, int, etc.) OR uppercase (Person, Host, etc.) OR array syntax
+        std::regex field_regex(R"(\s*(\*)?(\?)?([a-zA-Z][a-zA-Z0-9_]*)(\[\])?\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
         
         if (std::regex_match(line, match, field_regex)) {
             bool is_primary = !match[1].str().empty();
             bool is_nullable = !match[2].str().empty();
             std::string type_str = match[3].str();
-            std::string name = match[4].str();
-            std::string value_str = match[5].str();
+            bool is_array = !match[4].str().empty();
+            std::string name = match[5].str();
+            std::string value_str = match[6].str();
             
-            // Determine if array type
-            bool is_array = false;
+            // Build full type string
             std::string base_type = type_str;
-            if (type_str.back() == ']') {
-                is_array = true;
-                base_type = type_str.substr(0, type_str.find('['));
+            if (is_array) {
+                type_str += "[]";
             }
             
             if (state == ParseState::InStructSchema || state == ParseState::TopLevel) {
@@ -647,8 +669,10 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
         for (const std::string& inst_line : instance_lines) {
             auto instance = std::make_shared<TycoInstance>(current_struct->get_name());
             
-            // Split by comma (respecting nested structures)
-            std::vector<std::string> values;
+            // Parse field values (can be positional or named)
+            std::vector<std::pair<std::string, std::string>> field_values;  // (field_name, value_str)
+            
+            // Split by comma while respecting quotes and brackets
             std::string current;
             int depth = 0;
             bool in_quotes = false;
@@ -666,7 +690,9 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     } else if (c == ']' || c == '}' || c == ')') {
                         depth--;
                     } else if (c == ',' && depth == 0) {
-                        values.push_back(trim(current));
+                        if (!trim(current).empty()) {
+                            field_values.push_back({"", trim(current)});
+                        }
                         current.clear();
                         continue;
                     }
@@ -680,17 +706,65 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             }
             
             if (!trim(current).empty()) {
-                values.push_back(trim(current));
+                field_values.push_back({"", trim(current)});
             }
             
-            // Match values to fields
-            for (size_t i = 0; i < std::min(values.size(), fields.size()); ++i) {
-                std::string type_name = fields[i].type_name;
-                if (fields[i].is_array) {
+            // Check each value for "field: value" pattern
+            std::regex field_value_regex(R"(^([a-z_][a-zA-Z0-9_]*)\s*:\s*(.+)$)");
+            for (auto& [field_name, value_str] : field_values) {
+                std::smatch match;
+                if (std::regex_match(value_str, match, field_value_regex)) {
+                    field_name = match[1].str();
+                    value_str = match[2].str();
+                }
+            }
+            
+            // Assign values to fields
+            size_t positional_index = 0;
+            bool using_named_fields = false;
+            
+            for (const auto& [field_name, value_str] : field_values) {
+                std::string actual_field_name;
+                FieldSchema field_schema;
+                bool found = false;
+                
+                if (field_name.empty()) {
+                    // Positional argument
+                    if (using_named_fields) {
+                        throw std::runtime_error("Cannot use positional arguments after named arguments");
+                    }
+                    if (positional_index >= fields.size()) {
+                        throw std::runtime_error("Too many positional arguments for struct");
+                    }
+                    actual_field_name = fields[positional_index].name;
+                    field_schema = fields[positional_index];
+                    positional_index++;
+                    found = true;
+                } else {
+                    // Named argument
+                    using_named_fields = true;
+                    actual_field_name = field_name;
+                    for (const auto& f : fields) {
+                        if (f.name == field_name) {
+                            field_schema = f;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!found) {
+                    throw std::runtime_error("Unknown field: " + actual_field_name);
+                }
+                
+                // Parse the value
+                std::string type_name = field_schema.type_name;
+                if (field_schema.is_array) {
                     type_name += "[]";
                 }
-                auto val = parse_value(values[i], type_name);
-                instance->set_attribute(fields[i].name, val);
+                
+                auto val = parse_value(value_str, type_name);
+                instance->set_attribute(actual_field_name, val);
             }
             
             current_struct->add_instance(instance);

@@ -28,9 +28,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# Source files - using new parser implementation
+# Source files - main parser implementation
 set(SOURCES 
-    src/parser_new.cpp
+    src/parser.cpp
 )
 file(GLOB_RECURSE HEADERS "include/*.h")
 
@@ -60,6 +60,7 @@ if(BUILD_TESTS)
     file(GLOB_RECURSE TEST_SOURCES "tests/*.cpp")
     add_executable(tyco-tests ${TEST_SOURCES})
     target_link_libraries(tyco-tests tyco gtest_main)
+    target_compile_definitions(tyco-tests PRIVATE TYCO_TEST_SUITE_DIR="${CMAKE_SOURCE_DIR}/tests/shared")
     
     include(GoogleTest)
     gtest_discover_tests(tyco-tests)

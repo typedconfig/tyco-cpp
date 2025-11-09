@@ -62,7 +62,7 @@ tests/shared/  # Git submodule → tyco-test-suite
 - No rendering pipeline
 - Incomplete feature set
 
-### Planned Implementation (`parser_new.h`, `parser_new.cpp` - WIP)
+### Planned Implementation (`parser.h`, `parser.cpp` - WIP)
 - Class hierarchy matching Python reference:
   - `TycoValue` (base class)
   - `TycoStruct` (schema + instances)

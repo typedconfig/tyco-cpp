@@ -10,8 +10,42 @@
 #include <variant>
 #include <stdexcept>
 #include <regex>
+#include <utility>
 
 namespace tyco {
+
+struct SourceLocation {
+    std::string source;
+    size_t line = 0;
+    size_t column = 1;
+    std::string line_text;
+
+    SourceLocation() = default;
+
+    SourceLocation(std::string src, size_t line_number, size_t col_number, std::string text)
+        : source(std::move(src)),
+          line(line_number),
+          column(col_number),
+          line_text(std::move(text)) {}
+};
+
+struct SourceLine {
+    std::string text;
+    SourceLocation location;
+
+    SourceLine() = default;
+    SourceLine(std::string t, SourceLocation loc)
+        : text(std::move(t)), location(std::move(loc)) {}
+};
+
+class TycoParseError : public std::runtime_error {
+public:
+    TycoParseError(const std::string& message, const SourceLocation& location);
+    const SourceLocation& location() const noexcept { return location_; }
+
+private:
+    SourceLocation location_;
+};
 
 // Forward declarations
 class TycoValue;
@@ -211,19 +245,21 @@ class TycoReference : public TycoValue {
     std::string struct_name;
     std::string primary_key_value;
     mutable std::shared_ptr<TycoInstance> resolved_instance;
+    SourceLocation location;
     
 public:
-    TycoReference(const std::string& sname, const std::string& pk)
-        : struct_name(sname), primary_key_value(pk), resolved_instance(nullptr) {}
+    TycoReference(const std::string& sname, const std::string& pk, SourceLocation loc = {})
+        : struct_name(sname), primary_key_value(pk), resolved_instance(nullptr), location(std::move(loc)) {}
     
     TycoType type() const override { return TycoType::Reference; }
     std::string to_string() const override { return struct_name + "(" + primary_key_value + ")"; }
     std::shared_ptr<TycoValue> clone() const override {
-        return std::make_shared<TycoReference>(struct_name, primary_key_value);
+        return std::make_shared<TycoReference>(struct_name, primary_key_value, location);
     }
     
     std::string get_struct_name() const { return struct_name; }
     std::string get_primary_key_value() const { return primary_key_value; }
+    const SourceLocation& get_location() const { return location; }
     
     void resolve(TycoContext* context);
     std::shared_ptr<TycoInstance> get_resolved() const { return resolved_instance; }
@@ -334,15 +370,16 @@ class TycoLexer {
     std::string base_path;
     std::unordered_set<std::string> included_files;
     
-    std::vector<std::string> read_file_with_includes(const std::string& filepath);
-    std::shared_ptr<TycoValue> parse_value(const std::string& token, const std::string& type_name);
-    std::shared_ptr<TycoValue> parse_inline_instance(const std::string& content, const std::string& struct_name);
+    std::vector<SourceLine> read_file_with_includes(const std::string& filepath);
+    std::shared_ptr<TycoValue> parse_value(const std::string& token, const std::string& type_name, const SourceLocation& location = {});
+    std::shared_ptr<TycoValue> parse_inline_instance(const std::string& content, const std::string& struct_name, const SourceLocation& location);
+    std::shared_ptr<TycoContext> parse_lines(const std::vector<SourceLine>& lines);
     
 public:
     TycoLexer() = default;
     
     std::shared_ptr<TycoContext> parse_file(const std::string& filepath);
-    std::shared_ptr<TycoContext> parse_string(const std::string& content);
+    std::shared_ptr<TycoContext> parse_string(const std::string& content, const std::string& source_name = "<string>");
 };
 
 } // namespace tyco

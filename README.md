@@ -73,7 +73,7 @@ cd build
 ### Library Usage
 
 ```cpp
-#include "tyco/parser_new.h"
+#include "tyco/parser.h"
 
 int main() {
     // Create parser

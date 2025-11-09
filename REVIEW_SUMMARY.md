@@ -77,7 +77,7 @@ Updated main README with:
 
 Started work on spec-compliant parser:
 
-**Files:** `parser_new.h`, `parser_new.cpp` (600+ lines)
+**Files:** `parser.h`, `parser.cpp` (600+ lines)
 - Designed class hierarchy matching Python
 - Implemented TycoValue, TycoArray, TycoInstance, TycoReference
 - Added date/time/datetime type support
@@ -270,8 +270,8 @@ Missing:
 ### New Files
 - `FEATURE_GAP_ANALYSIS.md` - Detailed feature comparison (340 lines)
 - `STATUS.md` - Implementation status tracking (160 lines)
-- `include/tyco/parser_new.h` - WIP compliant parser header (340 lines)
-- `src/parser_new.cpp` - WIP compliant parser implementation (650 lines)
+- `include/tyco/parser.h` - WIP compliant parser header (340 lines)
+- `src/parser.cpp` - WIP compliant parser implementation (650 lines)
 - `tests/shared/` - Git submodule to tyco-test-suite
 - `.gitmodules` - Submodule configuration
 
@@ -284,7 +284,7 @@ Missing:
 **Commit 1:** `04a4ed2` - "Add feature gap analysis and initial work on compliant parser"
 - Added test suite submodule
 - Created FEATURE_GAP_ANALYSIS.md
-- Started parser_new.h/cpp
+- Started parser.h/cpp
 - Documented ~15% compliance
 
 **Commit 2:** `5cc95a7` - "Update documentation with compliance status"
@@ -305,7 +305,7 @@ Missing:
    - Python is already compliant
 
 2. **If proceeding with C++:**
-   - Complete parser_new.h/cpp implementation
+   - Complete parser.h/cpp implementation
    - Integrate with CMakeLists.txt
    - Create test harness for canonical tests
    - Begin Phase 1 of roadmap

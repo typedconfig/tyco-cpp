@@ -10,6 +10,45 @@ namespace tyco {
 
 using json = nlohmann::json;
 
+namespace {
+
+std::string build_error_message(const std::string& message, const SourceLocation& location) {
+    std::ostringstream oss;
+    bool has_path = !location.source.empty();
+    bool has_line = location.line > 0;
+
+    if (has_path) {
+        oss << location.source;
+    }
+    if (has_line) {
+        if (has_path) {
+            oss << ":";
+        }
+        oss << location.line;
+        if (location.column > 0) {
+            oss << ":" << location.column;
+        }
+    }
+    if (has_path || has_line) {
+        oss << " - ";
+    }
+    oss << message;
+    if (!location.line_text.empty()) {
+        oss << "\n    " << location.line_text;
+    }
+    return oss.str();
+}
+
+[[noreturn]] void throw_parse_error(const std::string& message, const SourceLocation& location) {
+    throw TycoParseError(message, location);
+}
+
+} // namespace
+
+TycoParseError::TycoParseError(const std::string& message, const SourceLocation& location)
+    : std::runtime_error(build_error_message(message, location)),
+      location_(location) {}
+
 // Helper functions for string processing
 static std::string trim(const std::string& str) {
     size_t start = str.find_first_not_of(" \t\r\n");
@@ -208,7 +247,7 @@ static std::string strip_comment(const std::string& str) {
 }
 
 // Parse string literal with proper quote handling
-static std::string parse_string_literal(const std::string& token) {
+static std::string parse_string_literal(const std::string& token, const SourceLocation& location) {
     std::string trimmed = trim(token);
     
     // Check if it's quoted at all
@@ -222,7 +261,7 @@ static std::string parse_string_literal(const std::string& token) {
     if (starts_with(trimmed, "\"\"\"")) {
         size_t end_pos = trimmed.find("\"\"\"", 3);
         if (end_pos == std::string::npos) {
-            throw std::runtime_error("Unclosed triple-quoted string");
+            throw_parse_error("Unclosed triple-quoted string", location);
         }
         std::string content = trimmed.substr(3, end_pos - 3);
         // Strip leading newline if present (common pattern for readability)
@@ -237,7 +276,7 @@ static std::string parse_string_literal(const std::string& token) {
     if (starts_with(trimmed, "'''")) {
         size_t end_pos = trimmed.find("'''", 3);
         if (end_pos == std::string::npos) {
-            throw std::runtime_error("Unclosed triple-quoted string");
+            throw_parse_error("Unclosed triple-quoted string", location);
         }
         // Return content as-is (literal, no escape processing)
         return trimmed.substr(3, end_pos - 3);
@@ -260,7 +299,7 @@ static std::string parse_string_literal(const std::string& token) {
 }
 
 // Parse integer with different bases
-static int64_t parse_integer(const std::string& token) {
+static int64_t parse_integer(const std::string& token, const SourceLocation& location) {
     std::string trimmed = trim(token);
     
     try {
@@ -293,7 +332,7 @@ static int64_t parse_integer(const std::string& token) {
         return is_negative ? -result : result;
         
     } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to parse integer '" + token + "': " + e.what());
+        throw_parse_error("Failed to parse integer '" + token + "': " + e.what(), location);
     }
 }
 
@@ -417,12 +456,12 @@ void TycoReference::resolve(TycoContext* context) {
     
     auto struct_def = context->get_struct(struct_name);
     if (!struct_def) {
-        throw std::runtime_error("Unknown struct: " + struct_name);
+        throw_parse_error("Unknown struct: " + struct_name, location);
     }
     
     resolved_instance = struct_def->find_by_primary_key(primary_key_value);
     if (!resolved_instance) {
-        throw std::runtime_error("Cannot find " + struct_name + " with primary key: " + primary_key_value);
+        throw_parse_error("Cannot find " + struct_name + " with primary key: " + primary_key_value, location);
     }
 }
 
@@ -679,7 +718,7 @@ std::string TycoContext::to_json() const {
 }
 
 // TycoLexer implementation
-std::vector<std::string> TycoLexer::read_file_with_includes(const std::string& filepath) {
+std::vector<SourceLine> TycoLexer::read_file_with_includes(const std::string& filepath) {
     // Canonicalize path
     std::filesystem::path abs_path = std::filesystem::absolute(filepath);
     std::string canonical = abs_path.string();
@@ -691,14 +730,18 @@ std::vector<std::string> TycoLexer::read_file_with_includes(const std::string& f
     
     std::ifstream file(filepath);
     if (!file.is_open()) {
-        throw std::runtime_error("Cannot open file: " + filepath);
+        SourceLocation loc(canonical, 0, 1, "");
+        throw_parse_error("Cannot open file: " + filepath, loc);
     }
     
-    std::vector<std::string> lines;
+    std::vector<SourceLine> lines;
     std::string line;
     std::filesystem::path dir = abs_path.parent_path();
+    size_t row = 0;
     
     while (std::getline(file, line)) {
+        ++row;
+        SourceLocation loc(canonical, row, 1, line);
         std::string trimmed = trim(line);
         
         // Handle #include directive
@@ -719,14 +762,14 @@ std::vector<std::string> TycoLexer::read_file_with_includes(const std::string& f
                 lines.insert(lines.end(), included_lines.begin(), included_lines.end());
             }
         } else {
-            lines.push_back(line);
+            lines.emplace_back(line, loc);
         }
     }
     
     return lines;
 }
 
-std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, const std::string& type_name) {
+std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, const std::string& type_name, const SourceLocation& location) {
     std::string trimmed = trim(strip_comment(token));
     
     // Null
@@ -743,7 +786,7 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
     
     // Integer
     if (type_name == "int") {
-        return std::make_shared<TycoInt>(parse_integer(trimmed));
+        return std::make_shared<TycoInt>(parse_integer(trimmed, location));
     }
     
     // Float
@@ -753,24 +796,24 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
     
     // Date
     if (type_name == "date") {
-        return std::make_shared<TycoDate>(parse_string_literal(trimmed));
+        return std::make_shared<TycoDate>(parse_string_literal(trimmed, location));
     }
     
     // Time
     if (type_name == "time") {
-        return std::make_shared<TycoTime>(parse_string_literal(trimmed));
+        return std::make_shared<TycoTime>(parse_string_literal(trimmed, location));
     }
     
     // DateTime
     if (type_name == "datetime") {
-        return std::make_shared<TycoDateTime>(parse_string_literal(trimmed));
+        return std::make_shared<TycoDateTime>(parse_string_literal(trimmed, location));
     }
     
         // String
     if (type_name == "str") {
         // Check if it's a literal string BEFORE parsing
         bool is_literal = starts_with(trimmed, "'");  // ' or '''
-        std::string str_val = parse_string_literal(trimmed);
+        std::string str_val = parse_string_literal(trimmed, location);
         bool is_template = !is_literal && has_template(str_val);
         return std::make_shared<TycoString>(str_val, is_template);
     }
@@ -784,17 +827,17 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
         
         // If args contain comma, it's an inline instance
         if (args_str.find(',') != std::string::npos) {
-            return parse_inline_instance(struct_name + "(" + args_str + ")", struct_name);
+            return parse_inline_instance(struct_name + "(" + args_str + ")", struct_name, location);
         } else {
             // Single argument - it's a reference by primary key
-            std::string pk_value = parse_string_literal(args_str);
-            return std::make_shared<TycoReference>(struct_name, pk_value);
+            std::string pk_value = parse_string_literal(args_str, location);
+            return std::make_shared<TycoReference>(struct_name, pk_value, location);
         }
     }
     
     // Inline instance: {field1: value1, field2: value2}
     if (trimmed.front() == '{' && trimmed.back() == '}') {
-        return parse_inline_instance(trimmed, type_name);
+        return parse_inline_instance(trimmed, type_name, location);
     }
     
     // Array: [item1, item2, ...]
@@ -815,7 +858,7 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
                     if (elem_type.back() == ']' && elem_type.find('[') != std::string::npos) {
                         elem_type = elem_type.substr(0, elem_type.find('['));
                     }
-                    arr->add(parse_value(current, elem_type));
+                    arr->add(parse_value(current, elem_type, location));
                 }
                 current.clear();
                 continue;
@@ -828,16 +871,16 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
             if (elem_type.back() == ']' && elem_type.find('[') != std::string::npos) {
                 elem_type = elem_type.substr(0, elem_type.find('['));
             }
-            arr->add(parse_value(current, elem_type));
+            arr->add(parse_value(current, elem_type, location));
         }
         
         return arr;
     }
     
-    throw std::runtime_error("Cannot parse value: " + token + " as type " + type_name);
+    throw_parse_error("Cannot parse value: " + token + " as type " + type_name, location);
 }
 
-std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& content, const std::string& struct_name) {
+std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& content, const std::string& struct_name, const SourceLocation& location) {
     // Parse Person(arg1, arg2) or {field1: val1, field2: val2} syntax
     std::string args_str;
     
@@ -849,11 +892,11 @@ std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& c
         size_t start = content.find('(');
         size_t end = content.rfind(')');
         if (start == std::string::npos || end == std::string::npos) {
-            throw std::runtime_error("Malformed inline instance: " + content);
+            throw_parse_error("Malformed inline instance: " + content, location);
         }
         args_str = content.substr(start + 1, end - start - 1);
     } else {
-        throw std::runtime_error("Unknown inline instance format: " + content);
+        throw_parse_error("Unknown inline instance format: " + content, location);
     }
     
     // Get struct definition to get fields
@@ -928,21 +971,26 @@ std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& c
         }
         
         // Parse value without knowing type - use generic string parsing
-        auto val = parse_value(value_str, "str");  // Default to string for now
+        auto val = parse_value(value_str, "str", location);  // Default to string for now
         instance->set_attribute(actual_field_name, val);
     }
     
     return instance;
 }
 
-std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content) {
-    std::vector<std::string> lines;
+std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content, const std::string& source_name) {
+    std::vector<SourceLine> lines;
     std::istringstream iss(content);
     std::string line;
+    size_t row = 0;
     while (std::getline(iss, line)) {
-        lines.push_back(line);
+        ++row;
+        lines.emplace_back(line, SourceLocation(source_name, row, 1, line));
     }
-    
+    return parse_lines(lines);
+}
+
+std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine>& lines) {
     auto context = std::make_shared<TycoContext>();
     
     // State machine
@@ -950,16 +998,22 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
     ParseState state = ParseState::TopLevel;
     
     std::shared_ptr<TycoStruct> current_struct;
-    std::vector<std::string> instance_lines;
+    struct InstanceLine {
+        std::string content;
+        SourceLocation location;
+    };
+    std::vector<InstanceLine> instance_lines;
     
     // Lambda to parse accumulated instance lines for a struct
     auto parse_struct_instances = [this](std::shared_ptr<TycoStruct> struct_def,
-                                         const std::vector<std::string>& inst_lines) {
+                                         const std::vector<InstanceLine>& inst_lines) {
         if (!struct_def || inst_lines.empty()) return;
         
         const auto& fields = struct_def->get_fields();
         
-        for (const std::string& inst_line : inst_lines) {
+        for (const auto& inst_line : inst_lines) {
+            const std::string& inst_text = inst_line.content;
+            const SourceLocation& inst_loc = inst_line.location;
             auto instance = std::make_shared<TycoInstance>(struct_def->get_name());
             
             // Parse field values (can be positional or named)
@@ -971,8 +1025,8 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             bool in_quotes = false;
             char quote_char = 0;
             
-            for (size_t i = 0; i < inst_line.length(); ++i) {
-                char c = inst_line[i];
+            for (size_t i = 0; i < inst_text.length(); ++i) {
+                char c = inst_text[i];
                 
                 if (!in_quotes) {
                     if (c == '"' || c == '\'') {
@@ -993,7 +1047,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                         continue;
                     }
                 } else {
-                    if (c == quote_char && (i == 0 || inst_line[i-1] != '\\')) {
+                    if (c == quote_char && (i == 0 || inst_text[i-1] != '\\')) {
                         in_quotes = false;
                     }
                 }
@@ -1036,10 +1090,10 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                 if (field_name.empty()) {
                     // Positional argument
                     if (using_named_fields) {
-                        throw std::runtime_error("Cannot use positional arguments after named arguments");
+                        throw_parse_error("Cannot use positional arguments after named arguments", inst_loc);
                     }
                     if (positional_index >= fields.size()) {
-                        throw std::runtime_error("Too many positional arguments for struct");
+                        throw_parse_error("Too many positional arguments for struct", inst_loc);
                     }
                     actual_field_name = fields[positional_index].name;
                     field_schema = fields[positional_index];
@@ -1059,7 +1113,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                 }
                 
                 if (!found) {
-                    throw std::runtime_error("Unknown field: " + actual_field_name);
+                    throw_parse_error("Unknown field: " + actual_field_name, inst_loc);
                 }
                 
                 // Parse the value
@@ -1068,7 +1122,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     type_name += "[]";
                 }
                 
-                auto val = parse_value(value_str, type_name);
+                auto val = parse_value(value_str, type_name, inst_loc);
                 instance->set_attribute(actual_field_name, val);
             }
             
@@ -1093,7 +1147,8 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
     };
     
     for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
-        std::string line = lines[line_idx];
+        const auto& line_info = lines[line_idx];
+        const std::string& line = line_info.text;
         std::string trimmed = trim(line);
         
         // Remove inline comments (but not within strings)
@@ -1171,7 +1226,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                 
                 while (line_idx + 1 < lines.size()) {
                     ++line_idx;
-                    std::string next_line = lines[line_idx];
+                    std::string next_line = lines[line_idx].text;
                     accumulated += "\n" + next_line;
                     
                     // Check if we now have a closing delimiter
@@ -1206,14 +1261,14 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     if (!value_str.empty()) {
                         // Default value - parse and store
                         std::string default_type = is_array ? (base_type + "[]") : type_str;
-                        field.default_value = parse_value(trim(value_str), default_type);
+                        field.default_value = parse_value(trim(value_str), default_type, line_info.location);
                     }
                     
                     current_struct->add_field(field);
                 } else {
                     // Global variable
                     if (!value_str.empty()) {
-                        auto val = parse_value(trim(value_str), type_str);
+                        auto val = parse_value(trim(value_str), type_str, line_info.location);
                         context->set_global(name, val);
                     }
                 }
@@ -1245,7 +1300,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                             if (field.is_array) {
                                 type_str += "[]";
                             }
-                            updated_field.default_value = parse_value(trim(value_str), type_str);
+                            updated_field.default_value = parse_value(trim(value_str), type_str, line_info.location);
                         } else {
                             // Empty value removes the default
                             updated_field.default_value = nullptr;
@@ -1276,13 +1331,15 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
             if (current_struct) {
                 state = ParseState::InStructInstances;
                 std::string inst_line = trimmed.substr(1);  // Remove "-"
+                InstanceLine inst{inst_line, line_info.location};
                 
                 // Handle backslash line continuation
                 while (!inst_line.empty() && inst_line.back() == '\\' && line_idx + 1 < lines.size()) {
                     inst_line.pop_back();  // Remove trailing backslash
                     ++line_idx;
-                    std::string next_line = lines[line_idx];
+                    std::string next_line = lines[line_idx].text;
                     inst_line += trim(next_line);  // Append next line (trimmed)
+                    inst.content = inst_line;
                 }
                 
                 // Check if this line has an unclosed multiline string
@@ -1293,8 +1350,9 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     // Accumulate lines until we find the closing delimiter
                     while (line_idx + 1 < lines.size()) {
                         ++line_idx;
-                        std::string next_line = lines[line_idx];
+                        std::string next_line = lines[line_idx].text;
                         inst_line += "\n" + next_line;
+                        inst.content = inst_line;
                         
                         size_t close_pos = inst_line.find(delimiter, open_pos + delimiter.length());
                         if (close_pos != std::string::npos) {
@@ -1303,17 +1361,18 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
                     }
                 }
                 
-                instance_lines.push_back(inst_line);
+                inst.content = inst_line;
+                instance_lines.push_back(inst);
             }
             continue;
         }
         
         // If in instance state and line is indented (not starting with -), it's a continuation
         if (state == ParseState::InStructInstances && !trimmed.empty() && 
-            line.length() > 0 && (line[0] == ' ' || line[0] == '\t') && !starts_with(trimmed, "-")) {
+            !line.empty() && (line[0] == ' ' || line[0] == '\t') && !starts_with(trimmed, "-")) {
             // Continuation of previous instance line
             if (!instance_lines.empty()) {
-                instance_lines.back() += " " + trimmed;
+                instance_lines.back().content += " " + trimmed;
             }
             continue;
         }
@@ -1327,11 +1386,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_string(const std::string& content)
 
 std::shared_ptr<TycoContext> TycoLexer::parse_file(const std::string& filepath) {
     auto lines = read_file_with_includes(filepath);
-    std::string content;
-    for (const auto& line : lines) {
-        content += line + "\n";
-    }
-    return parse_string(content);
+    return parse_lines(lines);
 }
 
 } // namespace tyco

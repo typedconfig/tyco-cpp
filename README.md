@@ -72,13 +72,18 @@ cd build
 
 ### Library Usage
 
+The repository bundles the canonical configuration sample at
+`tyco/example.tyco`
+([view on GitHub](https://github.com/typedconfig/tyco-cpp/blob/main/tyco/example.tyco)).
+Load it directly to explore globals, structs, and references:
+
 ```cpp
 #include "tyco/parser.h"
 
 int main() {
     // Parse a Tyco configuration file
     tyco::TycoParser parser;
-    std::shared_ptr<tyco::TycoContext> context = parser.parse_file("config.tyco");
+    std::shared_ptr<tyco::TycoContext> context = parser.parse_file("tyco/example.tyco");
 
     // Access global configuration values
     auto globals = context->get_globals();
@@ -102,6 +107,43 @@ int main() {
 
     return 0;
 }
+```
+
+### Example Tyco File
+
+```
+tyco/example.tyco
+```
+
+```tyco
+# Global configuration with type annotations
+str environment: production
+bool debug: false
+int timeout: 30
+
+# Database configuration struct
+Database:
+ *str name:           # Primary key field (*)
+  str host:
+  int port:
+  str connection_string:
+  # Instances
+  - primary, localhost,    5432, "postgresql://localhost:5432/myapp"
+  - replica, replica-host, 5432, "postgresql://replica-host:5432/myapp"
+
+# Server configuration struct  
+Server:
+ *str name:           # Primary key for referencing
+  int port:
+  str host:
+  ?str description:   # Nullable field (?) - can be null
+  # Server instances
+  - web1,    8080, web1.example.com,    description: "Primary web server"
+  - api1,    3000, api1.example.com,    description: null
+  - worker1, 9000, worker1.example.com, description: "Worker number 1"
+
+# Feature flags array
+str[] features: [auth, analytics, caching]
 ```
 
 ## Test Suite

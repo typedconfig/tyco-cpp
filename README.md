@@ -76,36 +76,30 @@ cd build
 #include "tyco/parser.h"
 
 int main() {
-    // Create parser
+    // Parse a Tyco configuration file
     tyco::TycoParser parser;
-    
-    // Parse file
     std::shared_ptr<tyco::TycoContext> context = parser.parse_file("config.tyco");
-    
-    // Access global variables
-    auto env_val = context->get_global("environment");
-    if (env_val && env_val->type() == tyco::TycoType::String) {
-        std::string env = env_val->as_string();
-        std::cout << "Environment: " << env << std::endl;
-    }
-    
-    // Access structured objects
-    auto server_struct = context->get_struct("Server");
-    if (server_struct) {
-        for (const auto& instance : server_struct->get_instances()) {
-            auto name = instance->get_attribute("name");
-            auto port = instance->get_attribute("port");
-            if (name && port) {
-                std::cout << "Server: " << name->as_string() 
-                         << ":" << port->as_int() << std::endl;
-            }
-        }
-    }
-    
+
+    // Access global configuration values
+    auto globals = context->get_globals();
+    auto environment = globals["environment"]->as_string();
+    auto debug = globals["debug"]->as_bool();
+    auto timeout = globals["timeout"]->as_float();
+
+    // Get all instances as objects
+    auto objects = context->get_objects();
+    auto databases = objects["Database"];
+    auto servers = objects["Server"];
+
+    // Access individual instance fields
+    auto primaryDb = databases[0];
+    auto dbHost = primaryDb->get_attribute("host")->as_string();
+    auto dbPort = primaryDb->get_attribute("port")->as_int();
+
     // Export to JSON
     std::string json_output = context->to_json();
     std::cout << json_output << std::endl;
-    
+
     return 0;
 }
 ```

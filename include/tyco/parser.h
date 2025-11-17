@@ -12,6 +12,8 @@
 #include <regex>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 namespace tyco {
 
 struct SourceLocation {
@@ -359,6 +361,7 @@ public:
     
     // Rendering pipeline
     void render();
+    nlohmann::json to_object() const;
     std::string to_json() const;
     
     // Resolve inline instances with positional args (_arg0, _arg1, etc.)

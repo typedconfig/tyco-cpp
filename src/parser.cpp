@@ -690,7 +690,7 @@ static json value_to_json(const std::shared_ptr<TycoValue>& val) {
     return nullptr;
 }
 
-std::string TycoContext::to_json() const {
+json TycoContext::to_object() const {
     json result = json::object();
     
     // Add globals in order
@@ -714,7 +714,11 @@ std::string TycoContext::to_json() const {
         }
     }
     
-    return result.dump(2);
+    return result;
+}
+
+std::string TycoContext::to_json() const {
+    return to_object().dump(2);
 }
 
 // TycoLexer implementation

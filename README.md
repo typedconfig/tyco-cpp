@@ -78,34 +78,31 @@ The repository bundles the canonical configuration sample at
 Load it directly to explore globals, structs, and references:
 
 ```cpp
+#include <iostream>
+#include <nlohmann/json.hpp>
 #include "tyco/parser.h"
 
 int main() {
-    // Parse a Tyco configuration file
     tyco::TycoParser parser;
-    std::shared_ptr<tyco::TycoContext> context = parser.parse_file("tyco/example.tyco");
+    auto context = parser.parse_file("tyco/example.tyco");
 
-    // Access global configuration values
-    auto globals = context->get_globals();
-    auto environment = globals["environment"]->as_string();
-    auto debug = globals["debug"]->as_bool();
-    auto timeout = globals["timeout"]->as_float();
+    // Materialize a single object containing globals + struct instances.
+    nlohmann::json config = context->to_object();
 
-    // Get all instances as objects
-    auto objects = context->get_objects();
-    auto databases = objects["Database"];
-    auto servers = objects["Server"];
+    auto environment = config["environment"].get<std::string>();
+    auto debug = config["debug"].get<bool>();
+    auto timeout = config["timeout"].get<int>();
+    std::cout << "env=" << environment << " debug=" << std::boolalpha << debug
+              << " timeout=" << timeout << "\n";
 
-    // Access individual instance fields
-    auto primaryDb = databases[0];
-    auto dbHost = primaryDb->get_attribute("host")->as_string();
-    auto dbPort = primaryDb->get_attribute("port")->as_int();
+    const auto& databases = config["Database"];
+    const auto& primary = databases.at(0);
+    auto db_host = primary["host"].get<std::string>();
+    auto db_port = primary["port"].get<int>();
+    std::cout << "primary database -> " << db_host << ':' << db_port << "\n";
 
-    // Export to JSON
-    std::string json_output = context->to_json();
-    std::cout << json_output << std::endl;
-
-    return 0;
+    // Serialise if you still need JSON text.
+    std::cout << context->to_json() << std::endl;
 }
 ```
 

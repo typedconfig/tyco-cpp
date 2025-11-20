@@ -4,6 +4,8 @@
 #include <iostream>
 #include <algorithm>
 #include <filesystem>
+#include <deque>
+#include <functional>
 #include <nlohmann/json.hpp>
 
 namespace tyco {
@@ -73,6 +75,97 @@ static bool starts_with(const std::string& str, const std::string& prefix) {
 
 static bool has_template(const std::string& str) {
     return str.find('{') != std::string::npos && str.find('}') != std::string::npos;
+}
+
+static std::shared_ptr<TycoValue> resolve_via_accessor(
+    const std::vector<std::string>& parts,
+    const std::function<std::shared_ptr<TycoValue>(const std::string&)>& accessor) {
+
+    if (!accessor || parts.empty()) {
+        return nullptr;
+    }
+
+    std::deque<std::string> queue(parts.begin(), parts.end());
+    auto current_accessor = accessor;
+    std::shared_ptr<TycoValue> current_value;
+
+    while (!queue.empty()) {
+        const auto& attr_name = queue.front();
+        auto candidate = current_accessor ? current_accessor(attr_name) : nullptr;
+
+        if (!candidate) {
+            if (queue.size() > 1) {
+                auto first = queue.front();
+                queue.pop_front();
+                auto second = queue.front();
+                queue.pop_front();
+                queue.push_front(first + "." + second);
+                continue;
+            }
+            return nullptr;
+        }
+
+        queue.pop_front();
+        current_value = candidate;
+
+        if (queue.empty()) {
+            return current_value;
+        }
+
+        if (current_value->type() == TycoType::Instance) {
+            auto inst = std::dynamic_pointer_cast<TycoInstance>(current_value);
+            current_accessor = [inst](const std::string& name) -> std::shared_ptr<TycoValue> {
+                return inst ? inst->get_attribute(name) : nullptr;
+            };
+        } else if (current_value->type() == TycoType::Reference) {
+            auto ref = std::dynamic_pointer_cast<TycoReference>(current_value);
+            auto resolved = ref ? ref->get_resolved() : nullptr;
+            if (!resolved) {
+                return nullptr;
+            }
+            current_accessor = [resolved](const std::string& name) -> std::shared_ptr<TycoValue> {
+                return resolved ? resolved->get_attribute(name) : nullptr;
+            };
+            current_value = resolved;
+        } else {
+            return nullptr;
+        }
+    }
+
+    return current_value;
+}
+
+static std::shared_ptr<TycoValue> resolve_template_value(
+    TycoContext* context,
+    TycoInstance* parent,
+    const std::vector<std::string>& parts) {
+
+    if (parts.empty()) {
+        return nullptr;
+    }
+
+    std::shared_ptr<TycoValue> value;
+
+    if (parent) {
+        value = resolve_via_accessor(parts, [parent](const std::string& name) -> std::shared_ptr<TycoValue> {
+            return parent ? parent->get_attribute(name) : nullptr;
+        });
+    }
+
+    if (!value && parts.size() > 1 && parts.front() == "global") {
+        std::vector<std::string> remainder(parts.begin() + 1, parts.end());
+        value = resolve_via_accessor(remainder, [context](const std::string& name) -> std::shared_ptr<TycoValue> {
+            return context ? context->get_global(name) : nullptr;
+        });
+    }
+
+    if (!value) {
+        value = resolve_via_accessor(parts, [context](const std::string& name) -> std::shared_ptr<TycoValue> {
+            return context ? context->get_global(name) : nullptr;
+        });
+    }
+
+    return value;
 }
 
 // Normalize datetime to ISO 8601 format
@@ -353,41 +446,16 @@ void TycoString::render_templates(TycoContext* context, TycoInstance* parent) {
     while (std::regex_search(result, match, template_regex)) {
         std::string var_path = match[1].str();
         std::string replacement;
-        
-        // Split by dots for nested access
+
         auto parts = split(var_path, '.');
-        std::shared_ptr<TycoValue> current;
-        
-        // Start with parent instance or global
-        if (parent && parent->get_attribute(parts[0])) {
-            current = parent->get_attribute(parts[0]);
+        auto resolved = resolve_template_value(context, parent, parts);
+
+        if (resolved) {
+            replacement = resolved->to_string();
         } else {
-            current = context->get_global(parts[0]);
+            replacement = "{" + var_path + "}";
         }
-        
-        // Navigate nested fields
-        for (size_t i = 1; i < parts.size() && current; ++i) {
-            if (current->type() == TycoType::Instance) {
-                auto inst = std::dynamic_pointer_cast<TycoInstance>(current);
-                current = inst->get_attribute(parts[i]);
-            } else if (current->type() == TycoType::Reference) {
-                auto ref = std::dynamic_pointer_cast<TycoReference>(current);
-                current = ref->get_resolved();
-                if (current && current->type() == TycoType::Instance) {
-                    auto inst = std::dynamic_pointer_cast<TycoInstance>(current);
-                    current = inst->get_attribute(parts[i]);
-                }
-            } else {
-                current = nullptr;
-            }
-        }
-        
-        if (current) {
-            replacement = current->to_string();
-        } else {
-            replacement = "{" + var_path + "}";  // Keep unresolved
-        }
-        
+
         result.replace(match.position(), match.length(), replacement);
     }
     
@@ -951,7 +1019,7 @@ std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& c
     }
     
     // Check for "field: value" pattern
-    std::regex field_value_regex(R"(^([a-z_][a-zA-Z0-9_]*)\s*:\s*(.+)$)");
+    std::regex field_value_regex(R"(^([a-z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\s*:\s*(.+)$)");
     for (auto& [field_name, value_str] : field_values) {
         std::smatch match;
         if (std::regex_match(value_str, match, field_value_regex)) {
@@ -1208,7 +1276,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
         
         // Check for field schema or global variable
         // Type can be: lowercase (str, int, etc.) OR uppercase (Person, Host, etc.) OR array syntax
-        std::regex field_regex(R"(\s*(\*)?(\?)?([a-zA-Z][a-zA-Z0-9_]*)(\[\])?\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
+        std::regex field_regex(R"(\s*(\*)?(\?)?([a-zA-Z][a-zA-Z0-9_]*)(\[\])?\s+([a-z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*):(?:\s+(.+))?)");
         
         if (std::regex_match(line, match, field_regex)) {
             bool is_primary = !match[1].str().empty();
@@ -1282,7 +1350,7 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
         
         // Check for default value update: "  fieldname: value" (indented, no type, has colon)
         // This allows updating defaults after schema definition or in files that include base schemas
-        std::regex default_update_regex(R"(\s+([a-z_][a-zA-Z0-9_]*):(?:\s+(.+))?)");
+        std::regex default_update_regex(R"(\s+([a-z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*):(?:\s+(.+))?)");
         if (current_struct && std::regex_match(line, match, default_update_regex)) {
             std::string field_name = match[1].str();
             std::string value_str = match[2].str();

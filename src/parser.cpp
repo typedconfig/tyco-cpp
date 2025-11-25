@@ -77,6 +77,83 @@ static bool has_template(const std::string& str) {
     return str.find('{') != std::string::npos && str.find('}') != std::string::npos;
 }
 
+static bool has_unclosed_parentheses(const std::string& str) {
+    int depth = 0;
+    bool in_quotes = false;
+    char quote_char = 0;
+    for (size_t i = 0; i < str.size(); ++i) {
+        char c = str[i];
+        if (!in_quotes) {
+            if (c == '"' || c == '\'') {
+                in_quotes = true;
+                quote_char = c;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                if (depth > 0) {
+                    depth--;
+                }
+            }
+        } else if (c == quote_char && (i == 0 || str[i - 1] != '\\')) {
+            in_quotes = false;
+        }
+    }
+    return depth > 0;
+}
+
+static bool tyco_values_equal(const std::shared_ptr<TycoValue>& a, const std::shared_ptr<TycoValue>& b) {
+    if (!a || !b) {
+        return false;
+    }
+    if (a->type() != b->type()) {
+        return false;
+    }
+    switch (a->type()) {
+        case TycoType::Null:
+            return true;
+        case TycoType::Bool: {
+            auto av = std::dynamic_pointer_cast<TycoBool>(a);
+            auto bv = std::dynamic_pointer_cast<TycoBool>(b);
+            return av && bv && av->as_bool() == bv->as_bool();
+        }
+        case TycoType::Int: {
+            auto av = std::dynamic_pointer_cast<TycoInt>(a);
+            auto bv = std::dynamic_pointer_cast<TycoInt>(b);
+            return av && bv && av->as_int() == bv->as_int();
+        }
+        case TycoType::Float: {
+            auto av = std::dynamic_pointer_cast<TycoFloat>(a);
+            auto bv = std::dynamic_pointer_cast<TycoFloat>(b);
+            return av && bv && av->as_float() == bv->as_float();
+        }
+        case TycoType::String:
+        case TycoType::Date:
+        case TycoType::Time:
+        case TycoType::DateTime: {
+            return a->to_string() == b->to_string();
+        }
+        default:
+            return a->to_string() == b->to_string();
+    }
+}
+
+static std::string format_enum_choices(const std::vector<std::shared_ptr<TycoValue>>& choices) {
+    std::ostringstream oss;
+    oss << "(";
+    for (size_t i = 0; i < choices.size(); ++i) {
+        if (i > 0) {
+            oss << ", ";
+        }
+        if (choices[i]) {
+            oss << choices[i]->to_string();
+        } else {
+            oss << "null";
+        }
+    }
+    oss << ")";
+    return oss.str();
+}
+
 static std::shared_ptr<TycoValue> resolve_via_accessor(
     const std::vector<std::string>& parts,
     const std::function<std::shared_ptr<TycoValue>(const std::string&)>& accessor) {
@@ -952,6 +1029,52 @@ std::shared_ptr<TycoValue> TycoLexer::parse_value(const std::string& token, cons
     throw_parse_error("Cannot parse value: " + token + " as type " + type_name, location);
 }
 
+std::vector<std::shared_ptr<TycoValue>> TycoLexer::parse_enum_choices(const std::string& token, const std::string& type_name, const SourceLocation& location) {
+    std::string trimmed = trim(strip_comment(token));
+    if (trimmed.empty() || trimmed.front() != '(' || trimmed.back() != ')') {
+        throw_parse_error("Enum choices must be enclosed in parentheses", location);
+    }
+    std::string inner = trimmed.substr(1, trimmed.length() - 2);
+    std::vector<std::shared_ptr<TycoValue>> choices;
+    std::string current;
+    int depth = 0;
+    bool in_quotes = false;
+    char quote_char = 0;
+    for (size_t i = 0; i < inner.size(); ++i) {
+        char c = inner[i];
+        if (!in_quotes) {
+            if (c == '"' || c == '\'') {
+                in_quotes = true;
+                quote_char = c;
+                current += c;
+                continue;
+            } else if (c == '[' || c == '{' || c == '(') {
+                depth++;
+            } else if (c == ']' || c == '}' || c == ')') {
+                if (depth > 0) depth--;
+            } else if (c == ',' && depth == 0) {
+                std::string value_token = trim(current);
+                if (value_token.empty()) {
+                    throw_parse_error("Empty enum choice encountered", location);
+                }
+                choices.push_back(parse_value(value_token, type_name, location));
+                current.clear();
+                continue;
+            }
+        } else if (c == quote_char && (i == 0 || inner[i - 1] != '\\')) {
+            in_quotes = false;
+        }
+        current += c;
+    }
+    if (!trim(current).empty()) {
+        choices.push_back(parse_value(trim(current), type_name, location));
+    }
+    if (choices.empty()) {
+        throw_parse_error("Enum declaration must contain at least one choice", location);
+    }
+    return choices;
+}
+
 std::shared_ptr<TycoValue> TycoLexer::parse_inline_instance(const std::string& content, const std::string& struct_name, const SourceLocation& location) {
     // Parse Person(arg1, arg2) or {field1: val1, field2: val2} syntax
     std::string args_str;
@@ -1195,13 +1318,31 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
                 }
                 
                 auto val = parse_value(value_str, type_name, inst_loc);
+                if (!field_schema.enum_choices.empty()) {
+                    bool match = false;
+                    for (const auto& choice : field_schema.enum_choices) {
+                        if (tyco_values_equal(val, choice)) {
+                            match = true;
+                            break;
+                        }
+                    }
+                    if (!match) {
+                        throw_parse_error("Field '" + actual_field_name + "' enum value '" + val->to_string() +
+                                          "' not in choices: " + format_enum_choices(field_schema.enum_choices), inst_loc);
+                    }
+                }
                 instance->set_attribute(actual_field_name, val);
             }
             
             // Apply default values for any fields not specified
             for (const auto& field : fields) {
-                if (!instance->has_attribute(field.name) && field.default_value) {
-                    instance->set_attribute(field.name, field.default_value);
+                if (!instance->has_attribute(field.name)) {
+                    if (!field.enum_choices.empty()) {
+                        throw_parse_error("Field '" + field.name + "' enum value not set for struct '" +
+                                          struct_def->get_name() + "'", inst_loc);
+                    } else if (field.default_value) {
+                        instance->set_attribute(field.name, field.default_value);
+                    }
                 }
             }
             
@@ -1310,6 +1451,24 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
                 }
             }
             
+            // If enum declaration spans multiple lines, continue until closing parenthesis
+            if (!value_str.empty()) {
+                std::string enum_candidate = trim(strip_comment(value_str));
+                if (!enum_candidate.empty() && enum_candidate.front() == '(' &&
+                    has_unclosed_parentheses(enum_candidate)) {
+                    std::string accumulated = value_str;
+                    while (line_idx + 1 < lines.size()) {
+                        ++line_idx;
+                        accumulated += "\n" + lines[line_idx].text;
+                        std::string updated = trim(strip_comment(accumulated));
+                        if (!updated.empty() && !has_unclosed_parentheses(updated)) {
+                            value_str = accumulated;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             // Build full type string
             std::string base_type = type_str;
             if (is_array) {
@@ -1331,9 +1490,17 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
                     field.is_array = is_array;
                     
                     if (!value_str.empty()) {
-                        // Default value - parse and store
-                        std::string default_type = is_array ? (base_type + "[]") : type_str;
-                        field.default_value = parse_value(trim(value_str), default_type, line_info.location);
+                        std::string trimmed_value = trim(strip_comment(value_str));
+                        if (!trimmed_value.empty() && trimmed_value.front() == '(') {
+                            if (is_array) {
+                                throw_parse_error("Enum constraints are only supported on scalar fields", line_info.location);
+                            }
+                            field.enum_choices = parse_enum_choices(trimmed_value, base_type, line_info.location);
+                            field.default_value = nullptr;
+                        } else if (!trimmed_value.empty()) {
+                            std::string default_type = is_array ? (base_type + "[]") : type_str;
+                            field.default_value = parse_value(trimmed_value, default_type, line_info.location);
+                        }
                     }
                     
                     current_struct->add_field(field);
@@ -1355,6 +1522,23 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
             std::string field_name = match[1].str();
             std::string value_str = match[2].str();
             
+            if (!value_str.empty()) {
+                std::string enum_candidate = trim(strip_comment(value_str));
+                if (!enum_candidate.empty() && enum_candidate.front() == '(' &&
+                    has_unclosed_parentheses(enum_candidate)) {
+                    std::string accumulated = value_str;
+                    while (line_idx + 1 < lines.size()) {
+                        ++line_idx;
+                        accumulated += "\n" + lines[line_idx].text;
+                        std::string updated = trim(strip_comment(accumulated));
+                        if (!updated.empty() && !has_unclosed_parentheses(updated)) {
+                            value_str = accumulated;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             // Find this field in the struct
             const auto& fields = current_struct->get_fields();
             auto field_it = std::find_if(fields.begin(), fields.end(),
@@ -1367,15 +1551,24 @@ std::shared_ptr<TycoContext> TycoLexer::parse_lines(const std::vector<SourceLine
                 for (const auto& field : fields) {
                     FieldSchema updated_field = field;
                     if (field.name == field_name) {
-                        if (!value_str.empty()) {
+                        std::string trimmed_value = trim(strip_comment(value_str));
+                        if (!trimmed_value.empty() && trimmed_value.front() == '(') {
+                            if (field.is_array) {
+                                throw_parse_error("Enum constraints are only supported on scalar fields", line_info.location);
+                            }
+                            updated_field.enum_choices = parse_enum_choices(trimmed_value, field.type_name, line_info.location);
+                            updated_field.default_value = nullptr;
+                        } else if (!trimmed_value.empty()) {
                             std::string type_str = field.type_name;
                             if (field.is_array) {
                                 type_str += "[]";
                             }
-                            updated_field.default_value = parse_value(trim(value_str), type_str, line_info.location);
+                            updated_field.default_value = parse_value(trimmed_value, type_str, line_info.location);
+                            updated_field.enum_choices.clear();
                         } else {
-                            // Empty value removes the default
+                            // Empty value removes the default or enum constraint
                             updated_field.default_value = nullptr;
+                            updated_field.enum_choices.clear();
                         }
                     }
                     updated_fields.push_back(updated_field);

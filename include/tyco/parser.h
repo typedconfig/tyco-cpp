@@ -275,8 +275,16 @@ struct FieldSchema {
     bool is_nullable;
     bool is_array;
     std::shared_ptr<TycoValue> default_value;
+    std::vector<std::shared_ptr<TycoValue>> enum_choices;
     
-    FieldSchema() : is_primary_key(false), is_nullable(false), is_array(false), default_value(nullptr) {}
+    FieldSchema()
+        : is_primary_key(false),
+          is_nullable(false),
+          is_array(false),
+          default_value(nullptr),
+          enum_choices() {}
+    
+    bool has_enum_constraint() const { return !enum_choices.empty(); }
 };
 
 class TycoStruct {
@@ -376,6 +384,7 @@ class TycoLexer {
     std::vector<SourceLine> read_file_with_includes(const std::string& filepath);
     std::shared_ptr<TycoValue> parse_value(const std::string& token, const std::string& type_name, const SourceLocation& location = {});
     std::shared_ptr<TycoValue> parse_inline_instance(const std::string& content, const std::string& struct_name, const SourceLocation& location);
+    std::vector<std::shared_ptr<TycoValue>> parse_enum_choices(const std::string& token, const std::string& type_name, const SourceLocation& location);
     std::shared_ptr<TycoContext> parse_lines(const std::vector<SourceLine>& lines);
     
 public:

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <ostream>
 #include <optional>
 #include <variant>
 #include <stdexcept>
@@ -369,8 +370,10 @@ public:
     
     // Rendering pipeline
     void render();
-    nlohmann::json to_object() const;
-    std::string to_json() const;
+    nlohmann::json as_object() const;
+    nlohmann::json as_json() const { return as_object(); }
+    std::string dumps_json(int indent = -1) const;
+    void dump_json(std::ostream& output, int indent = -1) const;
     
     // Resolve inline instances with positional args (_arg0, _arg1, etc.)
     void resolve_inline_instances();

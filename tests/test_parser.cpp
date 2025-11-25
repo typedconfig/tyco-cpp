@@ -79,7 +79,7 @@ TEST_P(TycoParserGoldenTest, ParsesCanonicalFiles) {
     ASSERT_NE(context, nullptr) << "Failed to parse " << test_case.input_path;
     
     context->render();
-    const std::string actual_json_str = context->to_json();
+    const std::string actual_json_str = context->dumps_json(2);
     
     json actual_json;
     ASSERT_NO_THROW(actual_json = json::parse(actual_json_str))

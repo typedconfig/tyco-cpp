@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
         context->render();
         
         // Output JSON
-        std::cout << context->to_json() << std::endl;
+        std::cout << context->dumps_json(2) << std::endl;
         
         return 0;
         

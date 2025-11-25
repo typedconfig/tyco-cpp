@@ -330,7 +330,7 @@ TycoContext
 │   ├── Build primary key maps
 │   ├── Resolve references
 │   └── Render templates
-└── to_json() method
+└── as_object()/dumps_json() helpers (parity with Python)
 
 TycoStruct
 ├── Schema (fields with types, markers)

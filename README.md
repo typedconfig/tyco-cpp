@@ -87,7 +87,7 @@ int main() {
     auto context = parser.parse_file("tyco/example.tyco");
 
     // Materialize a single object containing globals + struct instances.
-    nlohmann::json config = context->to_object();
+    nlohmann::json config = context->as_object();
 
     auto timezone = config["timezone"].get<std::string>();
     std::cout << "timezone=" << timezone << "\n";
@@ -104,7 +104,7 @@ int main() {
               << " cores=" << backup["cores"].get<int>() << "\n";
 
     // Serialise if you still need JSON text.
-    std::cout << context->to_json() << std::endl;
+    std::cout << context->dumps_json() << std::endl;
 }
 ```
 
@@ -220,7 +220,10 @@ public:
     void add_struct(std::shared_ptr<TycoStruct> s);
     
     // JSON export
-    std::string to_json() const;
+    nlohmann::json as_object() const;  // structured representation
+    nlohmann::json as_json() const;    // alias of as_object()
+    std::string dumps_json(int indent = -1) const;
+    void dump_json(std::ostream& out, int indent = -1) const;
 };
 ```
 
